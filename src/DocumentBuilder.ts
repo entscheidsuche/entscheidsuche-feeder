@@ -1,7 +1,6 @@
-import {ELDocument, SpiderFiles} from "./Model";
+import { ELDocument, IntText, SpiderFiles, SpiderUpdate } from "./Model";
 import {fileLoader, FileLoader} from "./FileLoader";
 import * as stream from "stream";
-import {parseStringPromise} from "xml2js";
 // @ts-ignore
 import {get} from "lodash";
 
@@ -9,19 +8,24 @@ import {get} from "lodash";
 export class DocumentBuilder {
 
     private fileLoader:FileLoader;
+    private documentBaseURL:string;
 
     constructor() {
         this.fileLoader = fileLoader();
+        this.documentBaseURL = `${process.env.DOCUMENT_BASE_URL}`;
     }
 
-    async build(spiderFiles:SpiderFiles): Promise<ELDocument> {
-        let metaFileName = DocumentBuilder.getMetaFileName(spiderFiles);
-        let attachmentFileName = DocumentBuilder.getPreferredAttachmentFileName(spiderFiles);
+    async build(spiderUpdate: SpiderUpdate, spiderFiles: SpiderFiles): Promise<ELDocument> {
+        const metaFileName = DocumentBuilder.getMetaFileName(spiderFiles);
+        const attachmentFileName = DocumentBuilder.getPreferredAttachmentFileName(spiderFiles);
         if (attachmentFileName !== undefined) {
             return Promise.all([this.buildBaseDocument(metaFileName), this.getAttachment(attachmentFileName)])
                 .then(zip => {
                     let [document, attachment] = zip;
                     document.data = attachment;
+                    if (document.url === undefined) {
+                        document.url = `${this.documentBaseURL}/${attachmentFileName}`
+                    }
                     return document;
                 });
         }
@@ -30,47 +34,73 @@ export class DocumentBuilder {
 
     private async buildBaseDocument(metaFileName:string): Promise<ELDocument> {
         return this.streamToString(this.fileLoader.getStream(metaFileName), "utf-8")
-            .then(xml => parseStringPromise(xml, {explicitArray: false})
-                .then(metaData => DocumentBuilder.createBaseDocument(metaFileName, metaData)));
+            .then(json => JSON.parse(json))
+                .then(metaData => DocumentBuilder.createBaseDocument(metaFileName, metaData))
+            .catch(err => { throw new Error(`error building file ${metaFileName}: ${err}`) });
     }
 
     private async getAttachment(attachmentFileName:string): Promise<string> {
-        return this.streamToString(this.fileLoader.getStream(attachmentFileName), "base64");
+        return this.streamToString(this.fileLoader.getStream(attachmentFileName), "base64")
+            .catch(err => { throw new Error(`error building file ${attachmentFileName}: ${err}`) });
     }
 
     private static createBaseDocument(metaFileName: string, metaData:any): ELDocument {
-        let levels = this.extractProperty(metaData, "Entscheid.Metainfos.Signatur")!.split("_");
-        const hierarchie:Array<string> = [];
+        let levels = (metaData.Signatur as string).split("_");
+        const hierarchy:Array<string> = [];
         let level_path:string = "";
         levels.forEach(level => {
             level_path = (level_path === "") ? level : `${level_path}_${level}`;
-            hierarchie.push(level_path);
+            hierarchy.push(level_path);
         });
-        return {
+        const canton = levels[0]
+        const title = metaData.Kopfzeile !== undefined ? this.intText(metaData.Kopfzeile) : undefined
+        const abstract = metaData.Abstract !== undefined ? this.intText(metaData.Abstract) : undefined
+        const meta = metaData.Meta !== undefined ? this.intText(metaData.Meta) : undefined
+        const reference = metaData.Num !== undefined ? Array.isArray(metaData.Num) ? metaData.Num : [metaData.Num] : undefined
+        const date = metaData.Datum !== undefined && metaData.Datum !== "0000-00-00" ? metaData.Datum : undefined
+
+        const doc: ELDocument = {
             id: this.getDocumentId(metaFileName),
-            titel: this.extractProperty(metaData, "Entscheid.Treffer.Kurz.Titel")!,
-            leitsatz: this.extractProperty(metaData, "Entscheid.Treffer.Kurz.Leitsatz", value => value !== ""),
-            rechtsgebiet: this.extractProperty(metaData, "Entscheid.Treffer.Kurz.Rechtsgebiet")!,
-            hierarchie: hierarchie,
-            signatur: this.extractProperty(metaData, "Entscheid.Metainfos.Signatur")!,
-            kanton: this.extractProperty(metaData, "Entscheid.Metainfos.Kanton")!,
-            gericht: this.extractProperty(metaData, "Entscheid.Metainfos.Gericht")!,
-            geschaeftsnummer: this.extractProperty(metaData, "Entscheid.Metainfos.Geschaeftsnummer")!,
-            edatum: this.extractProperty(metaData, "Entscheid.Metainfos.EDatum", value => value !== "0000-00-00")!
+            canton,
+            hierarchy
         };
+
+        if (title !== undefined) {
+            doc.title = title;
+        }
+
+        if (abstract !== undefined) {
+            doc.abstract = abstract;
+        }
+
+        if (meta !== undefined) {
+            doc.meta = meta;
+        }
+
+        if (reference !== undefined && reference.length > 0) {
+            doc.reference = reference;
+        }
+
+        if (date !== undefined) {
+            doc.date = date;
+        }
+
+        return doc;
     }
 
-    private static extractProperty(metaData:any, path:string, filter?:(value:string) => boolean): string | undefined {
-        let property = get(metaData, path);
-        if (filter !== undefined && !filter(property)) {
-            return undefined;
+    private static intText(raw: Array<{ Sprachen: Array<string>; Text: string }>): IntText {
+        const text: IntText = { de: '', fr: '', it: '' }
+        for (const entry of raw) {
+            for (const sprache of entry.Sprachen) {
+                (text as any)[sprache] = entry.Text
+            }
         }
-        return property;
+        return text
     }
 
     private static getMetaFileName(spiderFiles:SpiderFiles): string {
         for (let fileName in spiderFiles) {
-            if (spiderFiles.hasOwnProperty(fileName) && fileName.endsWith(".xml")) {
+            if (spiderFiles.hasOwnProperty(fileName) && fileName.endsWith(".json")) {
                 return fileName;
             }
         }

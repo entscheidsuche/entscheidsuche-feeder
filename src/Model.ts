@@ -1,17 +1,21 @@
 export enum SpiderFileStatus {
     EQUAL = "identisch",
-    NEW = "neu",
     UPDATE = "update"
 }
 
 export type SpiderFile = {
     checksum: string,
     status: SpiderFileStatus,
+    last_change?: string,
     quelle?: string
 }
 
 export type SpiderFiles = {
     [key in string]: SpiderFile
+}
+
+export type SpiderDictionary = {
+    [key in string]: number
 }
 
 export type SpiderUpdate = {
@@ -22,17 +26,23 @@ export type SpiderUpdate = {
     dateien: SpiderFiles
 }
 
+export type IntText = {
+    de: string,
+    fr: string,
+    it: string
+}
+
 export type ELDocument = {
     id: string,
-    titel: string,
-    leitsatz?: string,
-    rechtsgebiet: string,
-    hierarchie: Array<string>,
-    signatur: string,
-    kanton: string,
-    gericht: string,
-    geschaeftsnummer: string,
-    edatum?: string,
-    data?: string
+    source?: string,
+    canton: string,
+    title?: IntText,
+    abstract?: IntText,
+    meta?: IntText,
+    hierarchy: Array<string>,
+    reference?: Array<string>,
+    date?: string,
+    data?: string,
+    url?: string
 }
 
