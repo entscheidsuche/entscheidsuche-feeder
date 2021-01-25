@@ -111,11 +111,15 @@ export class SpiderProcessor {
                     username: this.elasticsearchUser,
                     password: this.elasticsearchPassword
                 }
-            })
-                .then(resp => {
-                    console.log(`processing document ${id}`)
-                })
-                .catch(err => console.log(err));
+            }).then(resp => {
+                console.log(`processing document ${id}`)
+            }).catch(err => {
+                if (err.response && err.response.data && err.response.data.error) {
+                    throw err.response.data.error;
+                } else {
+                    throw err;
+                }
+            });
         } else {
             return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${id}/?pipeline=attachment`, data, {
                 maxContentLength: Infinity,
@@ -124,11 +128,15 @@ export class SpiderProcessor {
                     username: this.elasticsearchUser,
                     password: this.elasticsearchPassword
                 }
-            })
-                .then(resp => {
-                    console.log(`processing document ${id}`)
-                })
-                .catch(err => console.log(err));
+            }).then(resp => {
+                console.log(`processing document ${id}`)
+            }).catch(err => {
+                if (err.response && err.response.data && err.response.data.error) {
+                    throw err.response.data.error;
+                } else {
+                    throw err;
+                }
+            });
         }
     }
 
