@@ -1,6 +1,7 @@
 export enum SpiderFileStatus {
     EQUAL = "identisch",
-    UPDATE = "update"
+    UPDATE = "update",
+    NEW = "neu"
 }
 
 export type SpiderFile = {

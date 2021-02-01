@@ -159,7 +159,7 @@ export class SpiderProcessor {
             const spiderFile = spiderUpdate.dateien[fileName];
             const existingSequence: number =
                 spiderDictionary.hasOwnProperty(fileName) ? spiderDictionary[fileName] : -1;
-            if (spiderFile.status === SpiderFileStatus.UPDATE ||
+            if (spiderFile.status === SpiderFileStatus.UPDATE || spiderFile.status === SpiderFileStatus.NEW ||
                 (spiderFile.status === SpiderFileStatus.EQUAL &&
                     SpiderProcessor.getSequence(spiderFile.last_change) > existingSequence)) {
                 if (Object.keys(spiderFiles).length == 0) {
