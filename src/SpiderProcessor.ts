@@ -115,9 +115,9 @@ export class SpiderProcessor {
                 console.log(`processing document ${id}`)
             }).catch(err => {
                 if (err.response && err.response.data && err.response.data.error) {
-                    throw err.response.data.error;
+                    throw { document: id, response: err.response.data.error }
                 } else {
-                    throw err;
+                    throw { document: id, response: err };
                 }
             });
         } else {
@@ -132,9 +132,9 @@ export class SpiderProcessor {
                 console.log(`processing document ${id}`)
             }).catch(err => {
                 if (err.response && err.response.data && err.response.data.error) {
-                    throw err.response.data.error;
+                    throw { document: id, response: err.response.data.error }
                 } else {
-                    throw err;
+                    throw { document: id, response: err };
                 }
             });
         }
