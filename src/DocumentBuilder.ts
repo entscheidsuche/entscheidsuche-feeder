@@ -1,8 +1,8 @@
-import { ELDocument, IntText, SpiderFiles, SpiderUpdate } from "./Model";
-import {fileLoader, FileLoader} from "./FileLoader";
+import { ELDocument, IntText, SpiderFiles, SpiderFileStatus, SpiderUpdate } from "./Model";
+import { fileLoader, FileLoader } from "./FileLoader";
 import * as stream from "stream";
 // @ts-ignore
-import {get} from "lodash";
+import { get } from "lodash";
 
 
 export class DocumentBuilder {
@@ -16,20 +16,23 @@ export class DocumentBuilder {
     }
 
     async build(spiderUpdate: SpiderUpdate, spiderFiles: SpiderFiles): Promise<ELDocument> {
-        const metaFileName = DocumentBuilder.getMetaFileName(spiderFiles);
+        const [metaFileName, status] = DocumentBuilder.getMetaFileName(spiderFiles);
         const attachmentFileName = DocumentBuilder.getPreferredAttachmentFileName(spiderFiles);
-        if (attachmentFileName !== undefined) {
-            return Promise.all([this.buildBaseDocument(metaFileName), this.getAttachment(attachmentFileName)])
-                .then(zip => {
-                    let [document, attachment] = zip;
-                    document.data = attachment;
-                    if (document.url === undefined) {
-                        document.url = `${this.documentBaseURL}/${attachmentFileName}`
-                    }
-                    return document;
-                });
+        if (status !== SpiderFileStatus.DELETED) {
+            if (attachmentFileName !== undefined) {
+                return Promise.all([this.buildBaseDocument(metaFileName), this.getAttachment(attachmentFileName)])
+                    .then(zip => {
+                        let [document, attachment] = zip;
+                        document.data = attachment;
+                        if (document.url === undefined) {
+                            document.url = `${this.documentBaseURL}/${attachmentFileName}`
+                        }
+                        return document;
+                    });
+            }
+            return this.buildBaseDocument(metaFileName);
         }
-        return this.buildBaseDocument(metaFileName);
+        return this.buildDeletedDocument(metaFileName);
     }
 
     private async buildBaseDocument(metaFileName:string): Promise<ELDocument> {
@@ -37,6 +40,16 @@ export class DocumentBuilder {
             .then(json => JSON.parse(json))
                 .then(metaData => DocumentBuilder.createBaseDocument(metaFileName, metaData))
             .catch(err => { throw new Error(`error building file ${metaFileName}: ${err}`) });
+    }
+
+    private async buildDeletedDocument(metaFileName:string): Promise<ELDocument> {
+        return new Promise<ELDocument>((res, rej) => {
+            const doc: ELDocument = {
+                id: DocumentBuilder.getDocumentId(metaFileName),
+                deleted: true
+            };
+            res(doc)
+        });
     }
 
     private async getAttachment(attachmentFileName:string): Promise<string> {
@@ -61,6 +74,7 @@ export class DocumentBuilder {
 
         const doc: ELDocument = {
             id: this.getDocumentId(metaFileName),
+            deleted: false,
             canton,
             hierarchy
         };
@@ -98,13 +112,13 @@ export class DocumentBuilder {
         return text
     }
 
-    private static getMetaFileName(spiderFiles:SpiderFiles): string {
+    private static getMetaFileName(spiderFiles:SpiderFiles): [string, SpiderFileStatus] {
         for (let fileName in spiderFiles) {
             if (spiderFiles.hasOwnProperty(fileName) && fileName.endsWith(".json")) {
-                return fileName;
+                return [fileName, spiderFiles[fileName].status];
             }
         }
-        throw new Error("missing xml in " + spiderFiles);
+        throw new Error("missing json in " + spiderFiles);
     }
 
     private static getPreferredAttachmentFileName(spiderFiles: SpiderFiles): string | undefined {

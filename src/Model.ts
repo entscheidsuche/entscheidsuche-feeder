@@ -1,7 +1,8 @@
 export enum SpiderFileStatus {
     EQUAL = "identisch",
     UPDATE = "update",
-    NEW = "neu"
+    NEW = "neu",
+    DELETED = "nicht_mehr_da"
 }
 
 export type SpiderFile = {
@@ -35,12 +36,13 @@ export type IntText = {
 
 export type ELDocument = {
     id: string,
+    deleted: boolean,
     source?: string,
-    canton: string,
+    canton?: string,
     title?: IntText,
     abstract?: IntText,
     meta?: IntText,
-    hierarchy: Array<string>,
+    hierarchy?: Array<string>,
     reference?: Array<string>,
     date?: string,
     data?: string,

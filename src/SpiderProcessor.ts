@@ -1,5 +1,5 @@
 import { ELDocument, SpiderDictionary, SpiderFiles, SpiderFileStatus, SpiderUpdate } from "./Model";
-import {DocumentBuilder} from "./DocumentBuilder";
+import { DocumentBuilder } from "./DocumentBuilder";
 import Axios from "axios"
 
 export class SpiderProcessor {
@@ -58,7 +58,7 @@ export class SpiderProcessor {
                         if (hit.fields !== undefined) {
                             const fields = hit.fields;
                             if (fields.hasOwnProperty("source") && fields["source"].length > 0) {
-                                spiderDictionary[`${spider}/${id}.xml`] = SpiderProcessor.getSequence(fields["source"][0]);
+                                spiderDictionary[`${spider}/${id}.json`] = SpiderProcessor.getSequence(fields["source"][0]);
                             }
                             if (fields.hasOwnProperty("attachment.source") && fields["attachment.source"].length > 0) {
                                 const extension = fields.hasOwnProperty("attachment.content_type")
@@ -100,11 +100,10 @@ export class SpiderProcessor {
     }
 
     async upsert(index: string, spiderUpdate: SpiderUpdate, document: ELDocument): Promise<void> {
-        const {...data} = document;
+        const {deleted, ...data} = document;
         const id = document.id;
-        data.source = spiderUpdate.job;
-        if (!document.hasOwnProperty('data')) {
-            return Axios.post(`${this.elasticsearchHost}/${index}/_update/${id}`, {doc: data}, {
+        if (deleted) {
+            return Axios.delete(`${this.elasticsearchHost}/${index}/_doc/${id}`, {
                 maxContentLength: Infinity,
                 maxBodyLength: Infinity,
                 auth: {
@@ -112,7 +111,7 @@ export class SpiderProcessor {
                     password: this.elasticsearchPassword
                 }
             }).then(resp => {
-                console.log(`processing document ${id}`)
+                console.log(`deleting document ${id}`)
             }).catch(err => {
                 if (err.response && err.response.data && err.response.data.error) {
                     throw { document: id, response: err.response.data.error }
@@ -121,22 +120,42 @@ export class SpiderProcessor {
                 }
             });
         } else {
-            return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${id}/?pipeline=attachment`, data, {
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity,
-                auth: {
-                    username: this.elasticsearchUser,
-                    password: this.elasticsearchPassword
-                }
-            }).then(resp => {
-                console.log(`processing document ${id}`)
-            }).catch(err => {
-                if (err.response && err.response.data && err.response.data.error) {
-                    throw { document: id, response: err.response.data.error }
-                } else {
-                    throw { document: id, response: err };
-                }
-            });
+            data.source = spiderUpdate.job;
+            if (!document.hasOwnProperty('data')) {
+                return Axios.post(`${this.elasticsearchHost}/${index}/_update/${id}`, {doc: data}, {
+                    maxContentLength: Infinity,
+                    maxBodyLength: Infinity,
+                    auth: {
+                        username: this.elasticsearchUser,
+                        password: this.elasticsearchPassword
+                    }
+                }).then(resp => {
+                    console.log(`processing document ${id}`)
+                }).catch(err => {
+                    if (err.response && err.response.data && err.response.data.error) {
+                        throw { document: id, response: err.response.data.error }
+                    } else {
+                        throw { document: id, response: err };
+                    }
+                });
+            } else {
+                return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${id}/?pipeline=attachment`, data, {
+                    maxContentLength: Infinity,
+                    maxBodyLength: Infinity,
+                    auth: {
+                        username: this.elasticsearchUser,
+                        password: this.elasticsearchPassword
+                    }
+                }).then(resp => {
+                    console.log(`processing document ${id}`)
+                }).catch(err => {
+                    if (err.response && err.response.data && err.response.data.error) {
+                        throw { document: id, response: err.response.data.error }
+                    } else {
+                        throw { document: id, response: err };
+                    }
+                });
+            }
         }
     }
 
@@ -161,7 +180,8 @@ export class SpiderProcessor {
                 spiderDictionary.hasOwnProperty(fileName) ? spiderDictionary[fileName] : -1;
             if (spiderFile.status === SpiderFileStatus.UPDATE || spiderFile.status === SpiderFileStatus.NEW ||
                 (spiderFile.status === SpiderFileStatus.EQUAL &&
-                    SpiderProcessor.getSequence(spiderFile.last_change) > existingSequence)) {
+                    SpiderProcessor.getSequence(spiderFile.last_change) > existingSequence) ||
+                (spiderFile.status === SpiderFileStatus.DELETED && existingSequence !== -1)) {
                 if (Object.keys(spiderFiles).length == 0) {
                     spiderFiles[fileName] = spiderFile;
                     filePath = fileName.substring(0, fileName.lastIndexOf('.'));
