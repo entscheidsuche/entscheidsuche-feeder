@@ -39,7 +39,11 @@ class HTTPSFileLoader implements FileLoader {
                     callback(null, chunk);
             }});
         const request = get(`${this.basePath}/${fileName}`, function(message) {
-            message.pipe(readableStream);
+            if (message.statusCode !== undefined && message.statusCode >= 400) {
+                readableStream.emit('error', new Error(`${message.statusCode}: ${message.statusMessage}`))
+            } else {
+                message.pipe(readableStream);
+            }
         });
         return readableStream;
     }

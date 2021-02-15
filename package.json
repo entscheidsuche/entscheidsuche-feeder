@@ -21,6 +21,7 @@
     "cors": "^2.8.5",
     "express": "^4.17.1",
     "lodash": "^4.17.20",
+    "serialize-error": "^8.0.1",
     "xml2js": "^0.4.23"
   },
   "devDependencies": {

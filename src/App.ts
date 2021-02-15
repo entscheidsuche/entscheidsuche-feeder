@@ -2,6 +2,7 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import { SpiderUpdate } from "./Model";
 import { SpiderProcessor } from "./SpiderProcessor";
+import { serializeError } from "serialize-error";
 
 const app = express()
 const processor = new SpiderProcessor();
@@ -22,8 +23,8 @@ app.post("/", async (req, res) => {
     console.log(`${new Date().toISOString()} finished processing spider ${spiderUpdate.spider} with timestamp ${spiderUpdate.time}`);
     return res.status(201).send();
   } catch (err) {
-    console.log(`${new Date().toISOString()} error in processing spider ${spiderUpdate.spider} with timestamp ${spiderUpdate.time}: ${JSON.stringify(err)}`);
-    return res.status(500).json(err);
+    console.log(`${new Date().toISOString()} error in processing spider ${spiderUpdate.spider} with timestamp ${spiderUpdate.time}: ${JSON.stringify(serializeError(err))}`);
+    return res.status(500).json(serializeError(err));
   }
 });
 
