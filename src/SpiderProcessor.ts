@@ -21,15 +21,37 @@ export class SpiderProcessor {
 
     async process(spiderUpdate: SpiderUpdate): Promise<void> {
         const index = this.getIndex(spiderUpdate);
-        const xcurrentSequence = SpiderProcessor.getSequence(spiderUpdate.job);
-        return this.fetchExistingSpider(spiderUpdate.spider, index)
+        const dropIndex = spiderUpdate.jobtyp === 'neu'
+        return this.fetchExistingSpider(spiderUpdate.spider, index, dropIndex)
             .then(spiderDictionary => SpiderProcessor.filterSpiderFiles(spiderDictionary, spiderUpdate).reverse())
             .then(spiderFilesList => this.processFiles(index, spiderUpdate, spiderFilesList));
     }
 
-    async fetchExistingSpider(spider: string, index: string): Promise<SpiderDictionary> {
+    async fetchExistingSpider(spider: string, index: string, dropIndex: boolean): Promise<SpiderDictionary> {
         const spiderDictionary: SpiderDictionary = {};
+        if (dropIndex) {
+          return this.deleteIndex(index).then(_ => spiderDictionary);
+        }
         return this.fetchExistingSpiderFrame(spider, index, spiderDictionary).then(_ => spiderDictionary);
+    }
+
+    async deleteIndex(index: string): Promise<void> {
+        return Axios.delete(`${this.elasticsearchHost}/${index}`, {
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            auth: {
+                username: this.elasticsearchUser,
+                password: this.elasticsearchPassword
+            }
+        }).then(resp => {
+            console.log(`deleting index ${index}`)
+        }).catch(err => {
+            if (err.response && err.response.data && err.response.data.error) {
+                throw { index: index, response: err.response.data.error }
+            } else {
+                throw { index: index, response: err };
+            }
+        });
     }
 
     async fetchExistingSpiderFrame(spider: string, index: string, spiderDictionary: SpiderDictionary, from?: Array<string>): Promise<void> {

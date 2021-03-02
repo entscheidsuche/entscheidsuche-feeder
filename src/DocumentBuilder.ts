@@ -118,7 +118,7 @@ export class DocumentBuilder {
                 return [fileName, spiderFiles[fileName].status];
             }
         }
-        throw new Error("missing json in " + spiderFiles);
+        throw new Error("missing json in " + JSON.stringify(spiderFiles));
     }
 
     private static getPreferredAttachmentFileName(spiderFiles: SpiderFiles): string | undefined {
