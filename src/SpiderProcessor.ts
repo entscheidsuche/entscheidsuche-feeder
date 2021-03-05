@@ -58,7 +58,16 @@ export class SpiderProcessor {
         const query: any = {
             size: 1000,
             query: {
-                match_all: {}
+                bool: {
+                    must: {
+                        match_all: {}
+                    },
+                    filter: {
+                        exists: {
+                            field: "attachment.content"
+                        }
+                    }
+                }
             },
             fields: ["source", "attachment.source", "attachment.content_type"],
             _source: false,
@@ -198,22 +207,28 @@ export class SpiderProcessor {
 
         for (let fileName of files) {
             const spiderFile = spiderUpdate.dateien[fileName];
+            const fileBase = fileName.substring(0, fileName.lastIndexOf('.'));
+            const fileType = fileName.substring(fileName.lastIndexOf('.') + 1);
+            const alternativeType = fileType === 'html' ? 'pdf' : (fileType === 'pdf') ? 'html' : 'json';
             const existingSequence: number =
                 spiderDictionary.hasOwnProperty(fileName) ? spiderDictionary[fileName] : -1;
-            if (spiderFile.status === SpiderFileStatus.UPDATE || spiderFile.status === SpiderFileStatus.NEW ||
+            const alternativeSequence: number =
+                spiderDictionary.hasOwnProperty(`${fileBase}.${alternativeType}`) ? spiderDictionary[`${fileBase}.${alternativeType}`] : -1;
+            const skip = (fileType !== 'json' && existingSequence === -1) ? (alternativeSequence !== -1) : false;
+            if (!skip && (spiderFile.status === SpiderFileStatus.UPDATE || spiderFile.status === SpiderFileStatus.NEW ||
                 (spiderFile.status === SpiderFileStatus.EQUAL &&
                     SpiderProcessor.getSequence(spiderFile.last_change) > existingSequence) ||
-                (spiderFile.status === SpiderFileStatus.DELETED && existingSequence !== -1)) {
+                (spiderFile.status === SpiderFileStatus.DELETED && existingSequence !== -1))) {
                 if (Object.keys(spiderFiles).length == 0) {
                     spiderFiles[fileName] = spiderFile;
-                    filePath = fileName.substring(0, fileName.lastIndexOf('.'));
+                    filePath = fileBase;
                 } else {
-                    if (filePath === fileName.substring(0, fileName.lastIndexOf('.'))) {
+                    if (filePath === fileBase) {
                         spiderFiles[fileName] = spiderFile;
                     } else {
                         spiderFilesList.push(spiderFiles);
                         spiderFiles = {[fileName]: spiderFile};
-                        filePath = fileName.substring(0, fileName.lastIndexOf('.'));
+                        filePath = fileBase;
                     }
                 }
             }
