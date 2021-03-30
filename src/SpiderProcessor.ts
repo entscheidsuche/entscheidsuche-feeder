@@ -29,10 +29,38 @@ export class SpiderProcessor {
 
     async fetchExistingSpider(spider: string, index: string, dropIndex: boolean): Promise<SpiderDictionary> {
         const spiderDictionary: SpiderDictionary = {};
-        if (dropIndex) {
-          return this.deleteIndex(index).then(_ => spiderDictionary);
-        }
-        return this.fetchExistingSpiderFrame(spider, index, spiderDictionary).then(_ => spiderDictionary);
+        return this.existsIndex(index).then(exists => {
+            if (exists) {
+                if (dropIndex) {
+                    return this.deleteIndex(index).then(_ => spiderDictionary);
+                }
+                return this.fetchExistingSpiderFrame(spider, index, spiderDictionary).then(_ => spiderDictionary);
+            } else {
+                return spiderDictionary;
+            }
+        });
+    }
+
+    async existsIndex(index: string): Promise<boolean> {
+        return Axios.head(`${this.elasticsearchHost}/${index}`, {
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            auth: {
+                username: this.elasticsearchUser,
+                password: this.elasticsearchPassword
+            }
+        }).then(resp => {
+            const exists = resp.status === 200;
+            console.log(`index ${index}${exists ? '' : ' does not'} exist`);
+            return exists;
+        }).catch(err => {
+            if (err.response && err.response.data && err.response.data.error) {
+                throw { index: index, response: err.response.data.error }
+            } else {
+                throw { index: index, response: err };
+            }
+        });
+
     }
 
     async deleteIndex(index: string): Promise<void> {
