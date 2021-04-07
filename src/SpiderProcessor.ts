@@ -54,7 +54,11 @@ export class SpiderProcessor {
             console.log(`index ${index}${exists ? '' : ' does not'} exist`);
             return exists;
         }).catch(err => {
-            if (err.response && err.response.data && err.response.data.error) {
+            if (err.response && err.response.status) {
+                const exists = err.response.status === 200;
+                console.log(`index ${index}${exists ? '' : ' does not'} exist`);
+                return exists;
+            } else if (err.response && err.response.data && err.response.data.error) {
                 throw { index: index, response: err.response.data.error }
             } else {
                 throw { index: index, response: err };
