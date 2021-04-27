@@ -184,7 +184,7 @@ export class SpiderProcessor {
             });
         } else {
             data.source = spiderUpdate.job;
-            if (!document.hasOwnProperty('data')) {
+            if (!data.hasOwnProperty('data') || data.data === undefined) {
                 return Axios.post(`${this.elasticsearchHost}/${index}/_update/${id}`, {doc: data}, {
                     maxContentLength: Infinity,
                     maxBodyLength: Infinity,
@@ -193,7 +193,7 @@ export class SpiderProcessor {
                         password: this.elasticsearchPassword
                     }
                 }).then(resp => {
-                    console.log(`processing document ${id}`)
+                    console.log(`updating document ${id}`)
                 }).catch(err => {
                     if (err.response && err.response.data && err.response.data.error) {
                         throw { document: id, response: err.response.data.error }
@@ -210,7 +210,7 @@ export class SpiderProcessor {
                         password: this.elasticsearchPassword
                     }
                 }).then(resp => {
-                    console.log(`processing document ${id}`)
+                    console.log(`inserting document ${id}, attachment length ${data.data!.length}`)
                 }).catch(err => {
                     if (err.response && err.response.data && err.response.data.error) {
                         throw { document: id, response: err.response.data.error }
