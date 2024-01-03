@@ -46,6 +46,7 @@ export type ELDocument = {
     reference?: Array<string>,
     date?: string,
     data?: string,
-    url?: string
+    url?: string,
+    scrapedate?: string
 }
 

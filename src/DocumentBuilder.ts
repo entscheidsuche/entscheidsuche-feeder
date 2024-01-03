@@ -71,6 +71,7 @@ export class DocumentBuilder {
         const meta = metaData.Meta !== undefined ? this.intText(metaData.Meta) : undefined
         const reference = metaData.Num !== undefined ? Array.isArray(metaData.Num) ? metaData.Num : [metaData.Num] : undefined
         const date = metaData.Datum !== undefined && metaData.Datum !== "0000-00-00" ? metaData.Datum : undefined
+        const scrapedate = metaData.Scrapedate !== undefined && metaData.Scrapedate !== "0000-00-00" ? metaData.Scrapedate : "2020-01-01"
 
         const doc: ELDocument = {
             id: this.getDocumentId(metaFileName),
@@ -98,6 +99,8 @@ export class DocumentBuilder {
         if (date !== undefined) {
             doc.date = date;
         }
+
+        doc.scrapedate = scrapedate
 
         return doc;
     }
