@@ -46,6 +46,7 @@ app.post("/chunk", async (req, res) => {
 
 })
 
+
 app.get("/import", async (req, res) => {
     try {
         await chunkProcessor.importAll()
@@ -55,9 +56,18 @@ app.get("/import", async (req, res) => {
         console.log(`${new Date().toISOString()} error in processing import`);
         return res.status(500).json(serializeError(err));
     }
+})
 
 
-
+app.get("/createChunkIndex", async (req, res) => {
+    try {
+        await chunkProcessor.createOrUpdateEmbeddingIndex("embeddings_qwen3-embedding")
+        return res.status(200).send();
+    }
+    catch (err) {
+        console.log(`${new Date().toISOString()} error in processing import`);
+        return res.status(500).json(serializeError(err));
+    }
 })
 
 const port = process.env.PORT || 8000;

@@ -87,4 +87,38 @@ export class ElasticUtil {
             }
         });
     }
+
+    async updateIndex(index: string, mapping: Object): Promise<any> {
+        return Axios.post(`${this.elasticsearchHost}/${index}/_mapping`, mapping, {
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            auth: {
+                username: this.elasticsearchUser,
+                password: this.elasticsearchPassword
+            },
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            httpsAgent: this.agent
+        }).then(resp => {
+            console.log(`index ${index} created successfully`);
+            return resp.data;
+        }).catch(err => {
+            if (err.response && err.response.data && err.response.data.error) {
+                console.error(`failed to create index ${index}:`, err.response.data.error);
+                throw {
+                    index,
+                    message: err.message,
+                    code: err.code
+                };
+            } else {
+                console.error(`failed to create index ${index}:`, err);
+                throw {
+                    index,
+                    message: err.message,
+                    code: err.code
+                };
+            }
+        });
+    }
 }

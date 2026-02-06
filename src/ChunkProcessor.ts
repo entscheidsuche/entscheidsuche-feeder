@@ -37,16 +37,25 @@ export class ChunkProcessor {
 
     async process(documentId: string): Promise<void> {
         try {
+
             const chunksMeta = await this.fetchChunkMetadata(documentId);
             for (const chunk of chunksMeta.Chunks) {
                 console.log(`${new Date().toISOString()} processing chunk ${chunk.id}`);
+                const startTimeFetch = Date.now();
                 const chunkData = await this.fetchChunk(chunk.url);
+                const endTimeFetch = Date.now();
+                console.log(`fetched chunk in ${endTimeFetch - startTimeFetch} ms`);
                 if (chunkData) {
                     const embeddingResponse = await this.getEmbedding(chunkData.Chunktext);
+                    console.log(`fetched chunk in ${endTimeFetch - startTimeFetch} ms`);
                     if (embeddingResponse) {
                         const embedding = embeddingResponse.data[0].embedding;
+                        const endTimeEmbed = Date.now();
+                        console.log(`got embedding in ${endTimeEmbed - endTimeFetch} ms`);
                         if (embedding) {
-                            await this.upsert(chunk.id, embedding, documentId, chunkData.Chunktext);
+                            await this.upsert(chunk.id, embedding, documentId, chunkData);
+                            const endTimeUpsert = Date.now();
+                            console.log(`upserted chunk in ${endTimeUpsert - endTimeEmbed} ms`);
                         }
                     }
                 }
@@ -99,28 +108,77 @@ export class ChunkProcessor {
         return responseData;
     }
 
-    async createEmbeddingIndex(name: string): Promise<any> {
+    async createOrUpdateEmbeddingIndex(name: string): Promise<any> {
         try {
-            const mapping = {
-                "mappings": {
-                    "properties": {
-                        "documentId": {
-                            "type": "keyword"
-                        },
-                        "embedding": {
-                            "type": "dense_vector",
-                            "dims": 4096,
-                            "index": true,
-                            "similarity": "cosine",
-                        },
-                        "chunkText": {
-                            "type": "text",
-                        }
+            const properties = {
+                "properties": {
+                    "documentId": {
+                        "type": "keyword"
+                    },
+                    "embedding": {
+                        "type": "dense_vector",
+                        "dims": 4096,
+                        "index": true,
+                        "similarity": "cosine",
+                    },
+                    "chunkText": {
+                        "type": "text",
+                    },
+                    "scrapyJob" : {
+                        "type": "keyword",
+                    },
+                    "timeStamp": {
+                        "type": "date"
+                    },
+                    "language" : {
+                        "type": "keyword",
+                    },
+                    "chunkTimeStamp": {
+                        "type": "date",
+                    },
+                    "date" : {
+                        "type": "date",
+                    },
+                    "scrapeDate" : {
+                        "type": "date",
+                    },
+                    "spider": {
+                        "type": "keyword",
+                    },
+                    "signature" : {
+                        "type": "keyword",
+                    },
+                    "pdf" : {
+                        "type": "object",
+                    },
+                    "html" : {
+                        "type": "object",
+                    },
+                    "num": {
+                        "type": "keyword",
+                    },
+                    "headline": {
+                        "type": "object",
+                    },
+                    "metadata" : {
+                        "type": "object",
+                    },
+                    "abstract" : {
+                        "type": "object",
+                    },
+                    "checkSum" : {
+                        "type": "text",
                     }
                 }
             }
-
-            return await this.elasticUtil.createIndex(name, mapping);
+            const mapping = {
+                "mappings": properties,
+            }
+            if (!await this.elasticUtil.existsIndex(name))
+                return await this.elasticUtil.createIndex(name, mapping);
+            else {
+                return await this.elasticUtil.updateIndex(name, properties);
+            }
         }
         catch (error) {
             console.error(error);
@@ -128,18 +186,42 @@ export class ChunkProcessor {
 
     }
 
-    async upsert(id: string, embedding: Array<number>, documentId: string, chunkText: string): Promise<void> {
-        const index = "embeddings_" + this.llmModel;
+
+    convertDateString(value: string): Date {
+        const dateVals = value.split(' ')[0].split('.').map(val => parseInt(val, 10));
+        const timeVals = value.split(' ')[1].split(':').map(val => parseInt(val, 10));
+
+        return new Date(dateVals[2], dateVals[1], dateVals[0], timeVals[0], timeVals[1], timeVals[2]);
+
+    }
+
+    async upsert(id: string, embedding: Array<number>, documentId: string, chunkData: any): Promise<void> {
+        const index = "embeddings_" + this.llmModel + "_new";
 
         if (!await this.elasticUtil.existsIndex(index)) {
-            await this.createEmbeddingIndex(index);
+            await this.createOrUpdateEmbeddingIndex(index);
         }
 
         const data ={
             embedding: embedding,
             documentId: documentId,
-            chunkText: chunkText,
-        }
+            chunkText: chunkData['ChunkText'],
+            scrapyJob: chunkData['ScrapyJob'],
+            timeStamp: this.convertDateString(chunkData['Zeit UTC']),
+            language: chunkData['Sprache'],
+            chunkTimeStamp: this.convertDateString(chunkData['Chunktime']),
+            date: chunkData['Datum'],
+            spider: chunkData['Spider'],
+            signature: chunkData['Signatur'],
+            pdf: chunkData['PDF'],
+            html: chunkData['HTML'],
+            num: chunkData['Num'],
+            headline: chunkData['Kopfzeile'],
+            metadata: chunkData['Meta'],
+            abstract: chunkData['Abstract'],
+            checkSum: chunkData['Checksum'],
+            scrape: chunkData['Scrapedate'],
+    }
         return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${id}`, data, {
             maxContentLength: Infinity,
             maxBodyLength: Infinity,
