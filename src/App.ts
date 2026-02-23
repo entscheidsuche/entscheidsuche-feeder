@@ -70,6 +70,18 @@ app.get("/createChunkIndex", async (req, res) => {
     }
 })
 
+
+app.get("/createMicroChunkIndex", async (req, res) => {
+    try {
+        await chunkProcessor.createOrUpdateMicroChunkIndex("embeddings_qwen3-embedding_micro")
+        return res.status(200).send();
+    }
+    catch (err) {
+        console.log(`${new Date().toISOString()} error in processing import`);
+        return res.status(500).json(serializeError(err));
+    }
+})
+
 const port = process.env.PORT || 8000;
 
 app.listen(port,()=>{

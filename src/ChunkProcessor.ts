@@ -37,23 +37,44 @@ export class ChunkProcessor {
 
     async process(documentId: string): Promise<void> {
         try {
-
+            const startTimeFetch = Date.now();
             const chunksMeta = await this.fetchChunkMetadata(documentId);
+            const endTimeFetch = Date.now();
+            console.log(`fetched chunkMeta in ${endTimeFetch - startTimeFetch} ms`);
             for (const chunk of chunksMeta.Chunks) {
                 console.log(`${new Date().toISOString()} processing chunk ${chunk.id}`);
-                const startTimeFetch = Date.now();
+                const startTimeFetchChunk = Date.now();
                 const chunkData = await this.fetchChunk(chunk.url);
-                const endTimeFetch = Date.now();
-                console.log(`fetched chunk in ${endTimeFetch - startTimeFetch} ms`);
+                const endTimeFetchChunk = Date.now();
+                console.log(`fetched chunk in ${endTimeFetchChunk - startTimeFetchChunk} ms`);
                 if (chunkData) {
                     const embeddingResponse = await this.getEmbedding(chunkData.Chunktext);
-                    console.log(`fetched chunk in ${endTimeFetch - startTimeFetch} ms`);
                     if (embeddingResponse) {
                         const embedding = embeddingResponse.data[0].embedding;
                         const endTimeEmbed = Date.now();
                         console.log(`got embedding in ${endTimeEmbed - endTimeFetch} ms`);
                         if (embedding) {
                             await this.upsert(chunk.id, embedding, documentId, chunkData);
+                            const endTimeUpsert = Date.now();
+                            console.log(`upserted chunk in ${endTimeUpsert - endTimeEmbed} ms`);
+                        }
+                    }
+                }
+            }
+            for (const microChunk of chunksMeta.MicroChunks) {
+                console.log(`${new Date().toISOString()} processing chunk ${microChunk.id}`);
+                const startTimeFetch = Date.now();
+                const chunkText = await this.fetchChunk(microChunk.url);
+                const endTimeFetch = Date.now();
+                console.log(`fetched chunk in ${endTimeFetch - startTimeFetch} ms`);
+                if (chunkText) {
+                    const embeddingResponse = await this.getEmbedding(chunkText);
+                    if (embeddingResponse) {
+                        const embedding = embeddingResponse.data[0].embedding;
+                        const endTimeEmbed = Date.now();
+                        console.log(`got embedding in ${endTimeEmbed - endTimeFetch} ms`);
+                        if (embedding) {
+                            await this.upsertMicroChunk(microChunk, embedding, documentId, chunkText);
                             const endTimeUpsert = Date.now();
                             console.log(`upserted chunk in ${endTimeUpsert - endTimeEmbed} ms`);
                         }
@@ -72,7 +93,8 @@ export class ChunkProcessor {
         await Axios.get(this.chunkApiUrl, {
             params: {
                dokid
-            }
+            },
+            timeout: 10000,
         }).then((response) => {
             responseData = response.data;
         }).catch((error) => {
@@ -187,6 +209,46 @@ export class ChunkProcessor {
     }
 
 
+    async createOrUpdateMicroChunkIndex(name: string): Promise<any> {
+        try {
+            const properties = {
+                "properties": {
+                    "documentId": {
+                        "type": "keyword"
+                    },
+                    "embedding": {
+                        "type": "dense_vector",
+                        "dims": 4096,
+                        "index": true,
+                        "similarity": "cosine",
+                    },
+                    "chunkText": {
+                        "type": "text",
+                    },
+                    "offset": {
+                        "type": "integer",
+                    },
+                    "length": {
+                        "type": "integer",
+                    }
+
+                }
+            }
+            const mapping = {
+                "mappings": properties,
+            }
+            if (!await this.elasticUtil.existsIndex(name))
+                return await this.elasticUtil.createIndex(name, mapping);
+            else {
+                return await this.elasticUtil.updateIndex(name, properties);
+            }
+        }
+        catch (error) {
+            console.error(error);
+        }
+    }
+
+
     convertDateString(value: string): Date {
         const dateVals = value.split(' ')[0].split('.').map(val => parseInt(val, 10));
         const timeVals = value.split(' ')[1].split(':').map(val => parseInt(val, 10));
@@ -243,6 +305,41 @@ export class ChunkProcessor {
 
     }
 
+    async upsertMicroChunk(microChunkMeta: any, embedding: Array<number>, documentId: string, chunkText: string): Promise<void> {
+        const index = "embeddings_" + this.llmModel + "_micro";
+
+        if (!await this.elasticUtil.existsIndex(index)) {
+            await this.createOrUpdateMicroChunkIndex(index);
+        }
+
+        const data ={
+            embedding: embedding,
+            documentId: documentId,
+            chunkText: chunkText,
+            offset: microChunkMeta.offset,
+            len: microChunkMeta.len,
+        }
+        return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${microChunkMeta.id}`, data, {
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            auth: {
+                username: this.elasticsearchUser,
+                password: this.elasticsearchPassword
+            },
+            httpsAgent: this.agent
+        }).then(() => {
+            console.log(`inserting document ${microChunkMeta.id}`)
+        }).catch(err => {
+            if (err.response && err.response.data && err.response.data.error) {
+                throw { document: microChunkMeta.id, response: err.response.data.error }
+            } else {
+                throw { document: microChunkMeta.id, response: err };
+            }
+        });
+
+
+    }
+
     public async importAll(): Promise<any> {
         let scrollSearch = {
             "query": {
@@ -268,6 +365,7 @@ export class ChunkProcessor {
             try{
                 for (const hit of response.hits.hits) {
                     console.log(`${count}/${totalCount}`);
+                    console.log(hit._id);
                     try {
                         await this.processImportHits(hit)
                         await this.process(hit._id)
