@@ -267,7 +267,7 @@ export class ChunkProcessor {
         const data ={
             embedding: embedding,
             documentId: documentId,
-            chunkText: chunkData['ChunkText'],
+            chunkText: chunkData['Chunktext'],
             scrapyJob: chunkData['ScrapyJob'],
             timeStamp: this.convertDateString(chunkData['Zeit UTC']),
             language: chunkData['Sprache'],
