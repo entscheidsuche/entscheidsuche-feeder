@@ -47,6 +47,21 @@ app.post("/chunk", async (req, res) => {
 })
 
 
+app.post("/indexMicroChunk", async (req, res) => {
+    const dokId = req.body;
+    console.log(`${new Date().toISOString()} processing microchunks for document ${dokId.id}`);
+    try {
+        await chunkProcessor.indexMicroChunks(dokId.id);
+        console.log(`${new Date().toISOString()} finished processing microchunks for ${dokId.id}`);
+        return res.status(200).send();
+    }
+    catch (err) {
+        console.log(`${new Date().toISOString()} error in processing microchunks for ${dokId.id}`);
+        return res.status(500).json(serializeError(err));
+    }
+})
+
+
 app.get("/import", async (req, res) => {
     try {
         await chunkProcessor.importAll()

@@ -61,6 +61,30 @@ export class ChunkProcessor {
                     }
                 }
             }
+            await this.processMicroChunks(chunksMeta, documentId)
+        }
+        catch (error) {
+            console.error(error);
+            throw error;
+        }
+    }
+
+    async indexMicroChunks(documentId: string): Promise<void> {
+        try {
+            const startTimeFetch = Date.now();
+            const chunksMeta = await this.fetchChunkMetadata(documentId);
+            const endTimeFetch = Date.now();
+            console.log(`fetched chunkMeta in ${endTimeFetch - startTimeFetch} ms`);
+            await this.processMicroChunks(chunksMeta, documentId)
+        }
+        catch (error) {
+            console.error(error);
+            throw error;
+        }
+    }
+
+    async processMicroChunks(chunksMeta: any, documentId: string): Promise<void> {
+        try {
             for (const microChunk of chunksMeta.MicroChunks) {
                 console.log(`${new Date().toISOString()} processing chunk ${microChunk.id}`);
                 const startTimeFetch = Date.now();
