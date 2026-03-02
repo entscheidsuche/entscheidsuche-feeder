@@ -62,9 +62,10 @@ app.post("/indexMicroChunk", async (req, res) => {
 })
 
 
-app.get("/import", async (req, res) => {
+app.post("/import", async (req, res) => {
     try {
-        await chunkProcessor.importAll()
+        const params = req.body;
+        await chunkProcessor.importAll(params.copyDocument, params.indexMicroChunks)
         return res.status(200).send();
     }
     catch (err) {

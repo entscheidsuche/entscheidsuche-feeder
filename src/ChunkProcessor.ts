@@ -61,7 +61,6 @@ export class ChunkProcessor {
                     }
                 }
             }
-            await this.processMicroChunks(chunksMeta, documentId)
         }
         catch (error) {
             console.error(error);
@@ -364,7 +363,7 @@ export class ChunkProcessor {
 
     }
 
-    public async importAll(): Promise<any> {
+    public async importAll(copyDocument: boolean, indexMicroChunks: boolean): Promise<any> {
         let scrollSearch = {
             "query": {
                 "query_string": {
@@ -390,8 +389,9 @@ export class ChunkProcessor {
                 for (const hit of response.hits.hits) {
                     console.log(`${count}/${totalCount}`);
                     console.log(hit._id);
-                    await this.processImportHits(hit)
+                    if (copyDocument) await this.processImportHits(hit)
                     await this.process(hit._id)
+                    if (indexMicroChunks) await this.indexMicroChunks(hit._id)
                     count++;
                 }
                 response = await Axios.post(this.searchUrl + '_search/scroll', {
