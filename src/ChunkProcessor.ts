@@ -397,11 +397,17 @@ export class ChunkProcessor {
                 for (const hit of response.hits.hits) {
                     console.log(`${count}/${totalCount}`);
                     console.log(hit._id);
-                    if (copyDocument) await this.processImportHits(hit)
-                    await this.process(hit._id)
-                    if (indexMicroChunks) await this.indexMicroChunks(hit._id)
+                    try {
+                        if (copyDocument) await this.processImportHits(hit)
+                        await this.process(hit._id)
+                        if (indexMicroChunks) await this.indexMicroChunks(hit._id)
+                    }
+                    catch(err) {
+                        console.error(err)
+                    }
                     count++;
                 }
+                if (count>totalCount) break;
                 response = await Axios.post(this.searchUrl + '_search/scroll', {
                     scroll_id: scrollId,
                     scroll: "30m"
