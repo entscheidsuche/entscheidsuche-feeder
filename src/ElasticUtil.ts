@@ -19,6 +19,41 @@ export class ElasticUtil {
         this.elasticsearchPassword = `${process.env.ELASTICSEARCH_PASSWORD}`;
     }
 
+    async existsDocument(id: string, index: string): Promise<boolean> {
+        return Axios.head(`${this.elasticsearchHost}/${index}/_doc/${id}`, {
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            auth: {
+                username: this.elasticsearchUser,
+                password: this.elasticsearchPassword
+            },
+            httpsAgent: this.agent
+        }).then(resp => {
+            const exists = resp.status === 200;
+            console.log(`document ${index}/${id}${exists ? '' : ' does not'} exist`);
+            return exists;
+        }).catch(err => {
+            if (err.response && err.response.status) {
+                const exists = err.response.status === 200;
+                console.log(`document ${index}/${id}${exists ? '' : ' does not'} exist`);
+                return exists;
+            } else if (err.response && err.response.data && err.response.data.error) {
+                throw {
+                    index,
+                    message: err.message,
+                    code: err.code
+                };
+            } else {
+                throw {
+                    index,
+                    message: err.message,
+                    code: err.code
+                };
+            }
+        });
+
+    }
+
     async existsIndex(index: string): Promise<boolean> {
         return Axios.head(`${this.elasticsearchHost}/${index}`, {
             maxContentLength: Infinity,

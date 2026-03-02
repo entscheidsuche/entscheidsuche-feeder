@@ -40,8 +40,12 @@ export class ChunkProcessor {
             const startTimeFetch = Date.now();
             const chunksMeta = await this.fetchChunkMetadata(documentId);
             const endTimeFetch = Date.now();
+            const index = "embeddings_" + this.llmModel + "_new";
             console.log(`fetched chunkMeta in ${endTimeFetch - startTimeFetch} ms`);
             for (const chunk of chunksMeta.Chunks) {
+                if(await this.elasticUtil.existsDocument(chunk.id, index)) {
+                    continue;
+                }
                 console.log(`${new Date().toISOString()} processing chunk ${chunk.id}`);
                 const startTimeFetchChunk = Date.now();
                 const chunkData = await this.fetchChunk(chunk.url);
@@ -84,7 +88,11 @@ export class ChunkProcessor {
 
     async processMicroChunks(chunksMeta: any, documentId: string): Promise<void> {
         try {
+            const index = "embeddings_" + this.llmModel + "_micro";
             for (const microChunk of chunksMeta.MicroChunks) {
+                if(await this.elasticUtil.existsDocument(microChunk.id, index)) {
+                    continue;
+                }
                 console.log(`${new Date().toISOString()} processing chunk ${microChunk.id}`);
                 const startTimeFetch = Date.now();
                 const chunkText = await this.fetchChunk(microChunk.url);
