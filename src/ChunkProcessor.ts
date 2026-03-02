@@ -390,13 +390,8 @@ export class ChunkProcessor {
                 for (const hit of response.hits.hits) {
                     console.log(`${count}/${totalCount}`);
                     console.log(hit._id);
-                    try {
-                        await this.processImportHits(hit)
-                        await this.process(hit._id)
-                    }
-                    catch(error) {
-                        console.error(error);
-                    }
+                    await this.processImportHits(hit)
+                    await this.process(hit._id)
                     count++;
                 }
                 response = await Axios.post(this.searchUrl + '_search/scroll', {
@@ -414,6 +409,7 @@ export class ChunkProcessor {
             }
             catch(error) {
                 console.error(error);
+                break
             }
 
         }
