@@ -125,7 +125,7 @@ export class ChunkProcessor {
             params: {
                dokid
             },
-            timeout: 10000,
+            timeout: 120000,
         }).then((response) => {
             responseData = response.data;
         }).catch((error) => {
