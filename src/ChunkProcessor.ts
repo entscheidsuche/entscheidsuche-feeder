@@ -17,6 +17,8 @@ export class ChunkProcessor {
 
     private agent : https.Agent;
 
+    private embedding_index;
+
 
     private elasticUtil: ElasticUtil;
 
@@ -33,6 +35,7 @@ export class ChunkProcessor {
             ca: fs.readFileSync(`${process.env.ELASTICSEARCH_CERT_PATH}`),
             rejectUnauthorized: false
         });
+        this.embedding_index = "embeddings_" + this.llmModel + "_2";
     }
 
     async process(documentId: string): Promise<void> {
@@ -40,9 +43,10 @@ export class ChunkProcessor {
             const startTimeFetch = Date.now();
             const chunksMeta = await this.fetchChunkMetadata(documentId);
             const endTimeFetch = Date.now();
-            const index = "embeddings_" + this.llmModel + "_new";
+            const index = this.embedding_index;
             console.log(`fetched chunkMeta in ${endTimeFetch - startTimeFetch} ms`);
             for (const chunk of chunksMeta.Chunks) {
+                chunk.id = chunk.id.replaceAll("/", "_");
                 if(await this.elasticUtil.existsDocument(chunk.id, index)) {
                     continue;
                 }
@@ -218,6 +222,9 @@ export class ChunkProcessor {
                     },
                     "checkSum" : {
                         "type": "text",
+                    },
+                    "hierarchy" : {
+                        "type": "keyword",
                     }
                 }
             }
@@ -286,7 +293,7 @@ export class ChunkProcessor {
     }
 
     async upsert(id: string, embedding: Array<number>, documentId: string, chunkData: any): Promise<void> {
-        const index = "embeddings_" + this.llmModel + "_new";
+        const index = this.embedding_index;
 
         if (!await this.elasticUtil.existsIndex(index)) {
             await this.createOrUpdateEmbeddingIndex(index);
@@ -310,6 +317,7 @@ export class ChunkProcessor {
             abstract: chunkData['Abstract'],
             checkSum: chunkData['Checksum'],
             scrape: chunkData['Scrapedate'],
+            hierarchy: this.buildHierarchy(chunkData['Signatur']),
     }
         return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${id}`, data, {
             maxContentLength: Infinity,
@@ -330,6 +338,19 @@ export class ChunkProcessor {
         });
 
 
+    }
+
+    buildHierarchy(signature: string): string[] {
+        const parts = signature.split("_");
+        let result: string[] = [];
+        for (let i = 0; i < parts.length; i++) {
+            let part = parts[0];
+            for (let j = 1; j <= i; j++) {
+                part += "_" + parts[j];
+            }
+            result.push(part);
+        }
+        return result;
     }
 
     async upsertMicroChunk(microChunkMeta: any, embedding: Array<number>, documentId: string, chunkText: string): Promise<void> {
