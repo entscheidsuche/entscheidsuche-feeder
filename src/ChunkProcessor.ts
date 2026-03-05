@@ -186,9 +186,6 @@ export class ChunkProcessor {
                     "language" : {
                         "type": "keyword",
                     },
-                    "chunkTimeStamp": {
-                        "type": "date",
-                    },
                     "date" : {
                         "type": "date",
                     },
@@ -302,7 +299,6 @@ export class ChunkProcessor {
             scrapyJob: chunkData['ScrapyJob'],
             timeStamp: this.convertDateString(chunkData['Zeit UTC']),
             language: chunkData['Sprache'],
-            chunkTimeStamp: this.convertDateString(chunkData['Chunktime']),
             date: chunkData['Datum'],
             spider: chunkData['Spider'],
             signature: chunkData['Signatur'],
