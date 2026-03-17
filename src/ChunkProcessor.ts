@@ -94,10 +94,11 @@ export class ChunkProcessor {
         try {
             const index = "embeddings_" + this.llmModel + "_micro";
             for (const microChunk of chunksMeta.MicroChunks) {
-                if(await this.elasticUtil.existsDocument(microChunk.id, index)) {
+                const microChunkId = microChunk.id.replaceAll("/", "_");
+                if(await this.elasticUtil.existsDocument(microChunkId, index)) {
                     continue;
                 }
-                console.log(`${new Date().toISOString()} processing chunk ${microChunk.id}`);
+                console.log(`${new Date().toISOString()} processing chunk ${microChunkId}`);
                 const startTimeFetch = Date.now();
                 const chunkText = await this.fetchChunk(microChunk.url);
                 const endTimeFetch = Date.now();
