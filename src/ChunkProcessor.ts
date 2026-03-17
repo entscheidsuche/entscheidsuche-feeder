@@ -368,7 +368,8 @@ export class ChunkProcessor {
             offset: microChunkMeta.offset,
             len: microChunkMeta.len,
         }
-        return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${microChunkMeta.id}`, data, {
+        const microChunkId = microChunkMeta.id.replaceAll("/", "_");
+        return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${microChunkId}`, data, {
             maxContentLength: Infinity,
             maxBodyLength: Infinity,
             auth: {
