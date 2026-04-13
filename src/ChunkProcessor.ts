@@ -76,13 +76,13 @@ export class ChunkProcessor {
         }
     }
 
-    async indexMicroChunks(documentId: string): Promise<void> {
+    async indexMicroChunks(documentId: string, chunkId?: string): Promise<void> {
         try {
             const startTimeFetch = Date.now();
             const chunksMeta = await this.fetchChunkMetadata(documentId);
             const endTimeFetch = Date.now();
             console.log(`fetched chunkMeta in ${endTimeFetch - startTimeFetch} ms`);
-            await this.processMicroChunks(chunksMeta, documentId)
+            await this.processMicroChunks(chunksMeta, documentId, chunkId)
         }
         catch (error) {
             console.error(error);
@@ -90,37 +90,51 @@ export class ChunkProcessor {
         }
     }
 
-    async processMicroChunks(chunksMeta: any, documentId: string): Promise<void> {
+    async processMicroChunks(chunksMeta: any, documentId: string, chunkId?: string): Promise<void> {
         try {
-            const index = "embeddings_" + this.llmModel + "_micro";
-            for (const microChunk of chunksMeta.MicroChunks) {
-                const microChunkId = microChunk.id.replaceAll("/", "_");
-                if(await this.elasticUtil.existsDocument(microChunkId, index)) {
-                    continue;
-                }
-                console.log(`${new Date().toISOString()} processing chunk ${microChunkId}`);
-                const startTimeFetch = Date.now();
-                const chunkText = await this.fetchChunk(microChunk.url);
-                const endTimeFetch = Date.now();
-                console.log(`fetched chunk in ${endTimeFetch - startTimeFetch} ms`);
-                if (chunkText) {
-                    const embeddingResponse = await this.getEmbedding(chunkText);
-                    if (embeddingResponse) {
-                        const embedding = embeddingResponse.data[0].embedding;
-                        const endTimeEmbed = Date.now();
-                        console.log(`got embedding in ${endTimeEmbed - endTimeFetch} ms`);
-                        if (embedding) {
-                            await this.upsertMicroChunk(microChunk, embedding, documentId, chunkText);
-                            const endTimeUpsert = Date.now();
-                            console.log(`upserted chunk in ${endTimeUpsert - endTimeEmbed} ms`);
-                        }
+            for (const chunk of chunksMeta.Chunks) {
+                if (chunkId) {
+                    if (chunkId === chunk.id.id) {
+                        await this.processMicroChunksOfSingleChunk(chunk, documentId)
                     }
                 }
+                else {
+                    await this.processMicroChunksOfSingleChunk(chunk, documentId)
+                }
+
             }
         }
         catch (error) {
             console.error(error);
             throw error;
+        }
+    }
+
+    async processMicroChunksOfSingleChunk(chunk: any, documentId: string){
+        const index = "embeddings_" + this.llmModel + "_micro_new";
+        for (const microChunk of chunk.MicroChunks) {
+            const microChunkId = microChunk.id.replaceAll("/", "_");
+            if(await this.elasticUtil.existsDocument(microChunkId, index)) {
+                continue;
+            }
+            console.log(`${new Date().toISOString()} processing chunk ${microChunkId}`);
+            const startTimeFetch = Date.now();
+            const chunkText = await this.fetchChunk(microChunk.url);
+            const endTimeFetch = Date.now();
+            console.log(`fetched chunk in ${endTimeFetch - startTimeFetch} ms`);
+            if (chunkText) {
+                const embeddingResponse = await this.getEmbedding(chunkText);
+                if (embeddingResponse) {
+                    const embedding = embeddingResponse.data[0].embedding;
+                    const endTimeEmbed = Date.now();
+                    console.log(`got embedding in ${endTimeEmbed - endTimeFetch} ms`);
+                    if (embedding) {
+                        await this.upsertMicroChunk(microChunk, embedding, documentId, chunkText);
+                        const endTimeUpsert = Date.now();
+                        console.log(`upserted chunk in ${endTimeUpsert - endTimeEmbed} ms`);
+                    }
+                }
+            }
         }
     }
 
@@ -266,8 +280,10 @@ export class ChunkProcessor {
                     },
                     "length": {
                         "type": "integer",
+                    },
+                    "chunkId": {
+                        "type": "keyword"
                     }
-
                 }
             }
             const mapping = {

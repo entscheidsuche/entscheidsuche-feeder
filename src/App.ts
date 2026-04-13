@@ -48,15 +48,18 @@ app.post("/chunk", async (req, res) => {
 
 
 app.post("/indexMicroChunk", async (req, res) => {
-    const dokId = req.body;
-    console.log(`${new Date().toISOString()} processing microchunks for document ${dokId.id}`);
+    const reqBody = req.body;
+    console.log(`${new Date().toISOString()} processing microchunks for document ${reqBody.id}`);
     try {
-        await chunkProcessor.indexMicroChunks(dokId.id);
-        console.log(`${new Date().toISOString()} finished processing microchunks for ${dokId.id}`);
+        if(reqBody.chunkId) {
+            await chunkProcessor.indexMicroChunks(reqBody.id, reqBody.chunkId)
+        }
+        await chunkProcessor.indexMicroChunks(reqBody.id);
+        console.log(`${new Date().toISOString()} finished processing microchunks for ${reqBody.id}`);
         return res.status(200).send();
     }
     catch (err) {
-        console.log(`${new Date().toISOString()} error in processing microchunks for ${dokId.id}`);
+        console.log(`${new Date().toISOString()} error in processing microchunks for ${reqBody.id}`);
         return res.status(500).json(serializeError(err));
     }
 })
@@ -89,7 +92,7 @@ app.get("/createChunkIndex", async (req, res) => {
 
 app.get("/createMicroChunkIndex", async (req, res) => {
     try {
-        await chunkProcessor.createOrUpdateMicroChunkIndex("embeddings_qwen3-embedding_micro")
+        await chunkProcessor.createOrUpdateMicroChunkIndex("embeddings_qwen3-embedding_micro_new")
         return res.status(200).send();
     }
     catch (err) {
