@@ -371,7 +371,7 @@ export class ChunkProcessor {
     }
 
     async upsertMicroChunk(microChunkMeta: any, embedding: Array<number>, documentId: string, chunkText: string): Promise<void> {
-        const index = "embeddings_" + this.llmModel + "_micro";
+        const index = "embeddings_" + this.llmModel + "_micro_new";
 
         if (!await this.elasticUtil.existsIndex(index)) {
             await this.createOrUpdateMicroChunkIndex(index);
