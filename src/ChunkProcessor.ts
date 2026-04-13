@@ -129,7 +129,7 @@ export class ChunkProcessor {
                     const endTimeEmbed = Date.now();
                     console.log(`got embedding in ${endTimeEmbed - endTimeFetch} ms`);
                     if (embedding) {
-                        await this.upsertMicroChunk(microChunk, embedding, documentId, chunkText);
+                        await this.upsertMicroChunk(microChunk, embedding, documentId, chunkText, chunk.id.id);
                         const endTimeUpsert = Date.now();
                         console.log(`upserted chunk in ${endTimeUpsert - endTimeEmbed} ms`);
                     }
@@ -370,7 +370,7 @@ export class ChunkProcessor {
         return result;
     }
 
-    async upsertMicroChunk(microChunkMeta: any, embedding: Array<number>, documentId: string, chunkText: string): Promise<void> {
+    async upsertMicroChunk(microChunkMeta: any, embedding: Array<number>, documentId: string, chunkText: string, chunkId: string): Promise<void> {
         const index = "embeddings_" + this.llmModel + "_micro_new";
 
         if (!await this.elasticUtil.existsIndex(index)) {
@@ -383,6 +383,7 @@ export class ChunkProcessor {
             chunkText: chunkText,
             offset: microChunkMeta.offset,
             len: microChunkMeta.len,
+            chunkId: chunkId
         }
         const microChunkId = microChunkMeta.id.replaceAll("/", "_");
         return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${microChunkId}`, data, {
