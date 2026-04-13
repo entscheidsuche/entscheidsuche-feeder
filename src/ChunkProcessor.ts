@@ -94,7 +94,7 @@ export class ChunkProcessor {
         try {
             for (const chunk of chunksMeta.Chunks) {
                 if (chunkId) {
-                    if (chunkId === chunk.id.id) {
+                    if (chunkId === chunk.id) {
                         await this.processMicroChunksOfSingleChunk(chunk, documentId)
                     }
                 }
@@ -129,7 +129,7 @@ export class ChunkProcessor {
                     const endTimeEmbed = Date.now();
                     console.log(`got embedding in ${endTimeEmbed - endTimeFetch} ms`);
                     if (embedding) {
-                        await this.upsertMicroChunk(microChunk, embedding, documentId, chunkText, chunk.id.id);
+                        await this.upsertMicroChunk(microChunk, embedding, documentId, chunkText, chunk.id);
                         const endTimeUpsert = Date.now();
                         console.log(`upserted chunk in ${endTimeUpsert - endTimeEmbed} ms`);
                     }
