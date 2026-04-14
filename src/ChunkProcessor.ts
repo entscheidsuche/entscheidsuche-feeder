@@ -94,7 +94,7 @@ export class ChunkProcessor {
         try {
             for (const chunk of chunksMeta.Chunks) {
                 if (chunkId) {
-                    if (chunkId === chunk.id) {
+                    if (chunkId === chunk.id.replaceAll("/", "_")) {
                         await this.processMicroChunksOfSingleChunk(chunk, documentId)
                     }
                 }
