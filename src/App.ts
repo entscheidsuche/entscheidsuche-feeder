@@ -54,7 +54,9 @@ app.post("/indexMicroChunk", async (req, res) => {
         if(reqBody.chunkId) {
             await chunkProcessor.indexMicroChunks(reqBody.id, reqBody.chunkId)
         }
-        await chunkProcessor.indexMicroChunks(reqBody.id);
+        else {
+            await chunkProcessor.indexMicroChunks(reqBody.id);
+        }
         console.log(`${new Date().toISOString()} finished processing microchunks for ${reqBody.id}`);
         return res.status(200).send();
     }
