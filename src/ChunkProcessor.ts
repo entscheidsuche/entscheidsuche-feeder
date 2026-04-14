@@ -129,7 +129,8 @@ export class ChunkProcessor {
                     const endTimeEmbed = Date.now();
                     console.log(`got embedding in ${endTimeEmbed - endTimeFetch} ms`);
                     if (embedding) {
-                        await this.upsertMicroChunk(microChunk, embedding, documentId, chunkText, chunk.id);
+                        const chunkId = chunk.id.replaceAll("/", "_");
+                        await this.upsertMicroChunk(microChunk, embedding, documentId, chunkText, chunkId);
                         const endTimeUpsert = Date.now();
                         console.log(`upserted chunk in ${endTimeUpsert - endTimeEmbed} ms`);
                     }
