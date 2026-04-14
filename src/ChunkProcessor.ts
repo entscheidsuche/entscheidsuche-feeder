@@ -2,6 +2,7 @@ import Axios from "axios";
 import {ElasticUtil} from "./ElasticUtil";
 import * as https from "https";
 import fs from "fs";
+import * as http from "http";
 
 export class ChunkProcessor {
 
@@ -16,6 +17,8 @@ export class ChunkProcessor {
     private searchUrl: string;
 
     private agent : https.Agent;
+
+    private noKeepAliveAgent : http.Agent;
 
     private embedding_index;
 
@@ -35,6 +38,7 @@ export class ChunkProcessor {
             ca: fs.readFileSync(`${process.env.ELASTICSEARCH_CERT_PATH}`),
             rejectUnauthorized: false
         });
+        this.noKeepAliveAgent = new http.Agent({keepAlive: false});
         this.embedding_index = "embeddings_" + this.llmModel + "_2";
     }
 
@@ -146,6 +150,7 @@ export class ChunkProcessor {
                dokid
             },
             timeout: 120000,
+            httpAgent: this.noKeepAliveAgent
         }).then((response) => {
             responseData = response.data;
         }).catch((error) => {
@@ -156,7 +161,10 @@ export class ChunkProcessor {
 
     async fetchChunk(url: string): Promise<any> {
         let responseData;
-        await Axios.get(url)
+        await Axios.get(url, {
+            timeout: 120000,
+            httpAgent: this.noKeepAliveAgent
+        })
             .then((response) => {
                 responseData = response.data;
             })
