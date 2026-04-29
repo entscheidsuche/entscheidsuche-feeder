@@ -1,11 +1,13 @@
 import { ELDocument, SpiderDictionary, SpiderFiles, SpiderFileStatus, SpiderUpdate } from "./Model";
 import { DocumentBuilder } from "./DocumentBuilder";
 import Axios from "axios"
+import {ChunkProcessor} from "./ChunkProcessor";
 
 export class SpiderProcessor {
 
     private parallel: number = 16;
     private documentBuilder: DocumentBuilder;
+    private chunkProcessor: ChunkProcessor;
     private elasticsearchHost: string;
     private readonly elasticsearchIndex: string;
     private elasticsearchUser: string;
@@ -13,6 +15,7 @@ export class SpiderProcessor {
 
     constructor() {
         this.documentBuilder = new DocumentBuilder();
+        this.chunkProcessor = new ChunkProcessor();
         this.elasticsearchHost = `${process.env.ELASTICSEARCH_HOST}`;
         this.elasticsearchIndex = `${process.env.ELASTICSEARCH_INDEX}`;
         this.elasticsearchUser = `${process.env.ELASTICSEARCH_USER}`;
@@ -157,7 +160,10 @@ export class SpiderProcessor {
             }
             processingSpiderFiles.push(
                 this.documentBuilder.build(spiderUpdate, spiderFiles)
-                    .then(doc => this.upsert(index, spiderUpdate, doc)));
+                    .then(doc => {
+                        this.upsert(index, spiderUpdate, doc);
+                        this.chunkProcessor.process(doc.id);
+                    }));
         }
         return Promise.all(processingSpiderFiles).then(_ => this.processFiles(index, spiderUpdate, spiderFilesList));
     }
