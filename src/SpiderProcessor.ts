@@ -1,25 +1,32 @@
 import { ELDocument, SpiderDictionary, SpiderFiles, SpiderFileStatus, SpiderUpdate } from "./Model";
 import { DocumentBuilder } from "./DocumentBuilder";
 import Axios from "axios"
-import {ChunkProcessor} from "./ChunkProcessor";
+import {ChunkQueue} from "./ChunkQueue";
+import https from "https";
+import fs from "fs";
 
 export class SpiderProcessor {
 
-    private parallel: number = 16;
+    private parallel: number = 1;
     private documentBuilder: DocumentBuilder;
-    private chunkProcessor: ChunkProcessor;
+    private chunkQueue: ChunkQueue;
     private elasticsearchHost: string;
     private readonly elasticsearchIndex: string;
     private elasticsearchUser: string;
     private elasticsearchPassword: string;
+    private agent : https.Agent;
 
-    constructor() {
+    constructor(chunkQueue?: ChunkQueue) {
         this.documentBuilder = new DocumentBuilder();
-        this.chunkProcessor = new ChunkProcessor();
+        this.chunkQueue = chunkQueue ?? new ChunkQueue();
         this.elasticsearchHost = `${process.env.ELASTICSEARCH_HOST}`;
         this.elasticsearchIndex = `${process.env.ELASTICSEARCH_INDEX}`;
         this.elasticsearchUser = `${process.env.ELASTICSEARCH_USER}`;
         this.elasticsearchPassword = `${process.env.ELASTICSEARCH_PASSWORD}`;
+        this.agent = new https.Agent({
+            ca: fs.readFileSync(`${process.env.ELASTICSEARCH_CERT_PATH}`),
+            rejectUnauthorized: false
+        });
     }
 
     async process(spiderUpdate: SpiderUpdate): Promise<void> {
@@ -51,7 +58,8 @@ export class SpiderProcessor {
             auth: {
                 username: this.elasticsearchUser,
                 password: this.elasticsearchPassword
-            }
+            },
+            httpsAgent: this.agent
         }).then(resp => {
             const exists = resp.status === 200;
             console.log(`index ${index}${exists ? '' : ' does not'} exist`);
@@ -77,7 +85,8 @@ export class SpiderProcessor {
             auth: {
                 username: this.elasticsearchUser,
                 password: this.elasticsearchPassword
-            }
+            },
+            httpsAgent: this.agent
         }).then(resp => {
             console.log(`deleting index ${index}`)
         }).catch(err => {
@@ -113,7 +122,8 @@ export class SpiderProcessor {
         }
         return Axios.post(`${this.elasticsearchHost}/${index}/_search`, query, {
             maxContentLength: Infinity,
-            maxBodyLength: Infinity
+            maxBodyLength: Infinity,
+            httpsAgent: this.agent
         })
             .then(resp => {
                 if (resp.data.hits !== undefined && resp.data.hits.hits !== undefined) {
@@ -150,8 +160,9 @@ export class SpiderProcessor {
 
     async processFiles(index: string, spiderUpdate: SpiderUpdate, spiderFilesList: Array<SpiderFiles>): Promise<void> {
         if (spiderFilesList.length === 0) {
-            return Promise.resolve();
+            return; // Promise.resolve();
         }
+        console.log(spiderFilesList[spiderFilesList.length - 1]);
         const processingSpiderFiles: Array<Promise<void>> = [];
         for (let idx = 0; idx < this.parallel; idx++) {
             let spiderFiles = spiderFilesList.pop();
@@ -160,12 +171,14 @@ export class SpiderProcessor {
             }
             processingSpiderFiles.push(
                 this.documentBuilder.build(spiderUpdate, spiderFiles)
-                    .then(doc => {
-                        this.upsert(index, spiderUpdate, doc);
-                        this.chunkProcessor.process(doc.id);
-                    }));
+                    .then(doc =>
+                        this.upsert(index, spiderUpdate, doc)
+                            .then(() => this.chunkQueue.enqueue(doc.id)))
+                    .catch(err => console.warn(`Failed to process file:`, err)));
         }
-        return Promise.all(processingSpiderFiles).then(_ => this.processFiles(index, spiderUpdate, spiderFilesList));
+        console.log(spiderFilesList.length);
+        await Promise.all(processingSpiderFiles);
+        return this.processFiles(index, spiderUpdate, spiderFilesList);
     }
 
     async upsert(index: string, spiderUpdate: SpiderUpdate, document: ELDocument): Promise<void> {
@@ -178,7 +191,8 @@ export class SpiderProcessor {
                 auth: {
                     username: this.elasticsearchUser,
                     password: this.elasticsearchPassword
-                }
+                },
+                httpsAgent: this.agent
             }).then(resp => {
                 console.log(`deleting document ${id}`)
             }).catch(err => {
@@ -197,7 +211,8 @@ export class SpiderProcessor {
                     auth: {
                         username: this.elasticsearchUser,
                         password: this.elasticsearchPassword
-                    }
+                    },
+                    httpsAgent: this.agent
                 }).then(resp => {
                     console.log(`updating document ${id}`)
                 }).catch(err => {
@@ -214,7 +229,8 @@ export class SpiderProcessor {
                     auth: {
                         username: this.elasticsearchUser,
                         password: this.elasticsearchPassword
-                    }
+                    },
+                    httpsAgent: this.agent
                 }).then(resp => {
                     console.log(`inserting document ${id}, attachment length ${data.data!.length}`)
                 }).catch(err => {

@@ -45,6 +45,9 @@ class HTTPSFileLoader implements FileLoader {
                 message.pipe(readableStream);
             }
         });
+        request.on('error', (err) => {
+            readableStream.destroy(err);
+        });
         return readableStream;
     }
 }
