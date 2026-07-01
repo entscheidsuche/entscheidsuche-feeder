@@ -1,6 +1,7 @@
 import { ELDocument, SpiderDictionary, SpiderFiles, SpiderFileStatus, SpiderUpdate } from "./Model";
 import { DocumentBuilder } from "./DocumentBuilder";
 import Axios from "axios"
+import { serializeError } from "serialize-error";
 
 export class SpiderProcessor {
 
@@ -143,6 +144,22 @@ export class SpiderProcessor {
 
     private getIndex(spiderUpdate: SpiderUpdate) {
         return `${this.elasticsearchIndex}-${spiderUpdate.spider.toLowerCase()}`;
+    }
+
+    async reportStatus(spiderUpdate: SpiderUpdate, err?: any): Promise<void> {
+        return Axios.get(`${process.env.STATUS_REPORT_URL}`, {
+            params: {
+                index: `${process.env.FEEDER_ID}`,
+                spider: spiderUpdate.spider,
+                job: spiderUpdate.job,
+                status: err === undefined ? 'ok' : 'error',
+                message: err === undefined ? 'ok' : JSON.stringify(serializeError(err))
+            }
+        }).then(_ => {
+            console.log(`reported status for spider ${spiderUpdate.spider}, job ${spiderUpdate.job}`);
+        }).catch(reportErr => {
+            console.log(`error reporting status for spider ${spiderUpdate.spider}, job ${spiderUpdate.job}: ${JSON.stringify(serializeError(reportErr))}`);
+        });
     }
 
     async processFiles(index: string, spiderUpdate: SpiderUpdate, spiderFilesList: Array<SpiderFiles>): Promise<void> {

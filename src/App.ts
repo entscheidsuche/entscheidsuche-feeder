@@ -21,9 +21,11 @@ app.post("/", async (req, res) => {
   try {
     await processor.process(spiderUpdate);
     console.log(`${new Date().toISOString()} finished processing spider ${spiderUpdate.spider} with timestamp ${spiderUpdate.time}`);
+    await processor.reportStatus(spiderUpdate);
     return res.status(201).send();
   } catch (err) {
     console.log(`${new Date().toISOString()} error in processing spider ${spiderUpdate.spider} with timestamp ${spiderUpdate.time}: ${JSON.stringify(serializeError(err))}`);
+    await processor.reportStatus(spiderUpdate, err);
     return res.status(500).json(serializeError(err));
   }
 });
