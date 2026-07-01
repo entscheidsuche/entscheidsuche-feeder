@@ -2,7 +2,13 @@ export enum SpiderFileStatus {
     EQUAL = "identisch",
     UPDATE = "update",
     NEW = "neu",
-    DELETED = "nicht_mehr_da"
+    DELETED = "nicht_mehr_da",
+    // Konsolidierer-Status: Dokument war aus dem Index entfernt und ist wieder da.
+    // Muss re-indexiert werden (identisch_wieder_da wie EQUAL, anders_wieder_da wie UPDATE).
+    EQUAL_AGAIN = "identisch_wieder_da",
+    CHANGED_AGAIN = "anders_wieder_da",
+    // Inhaltsdatei fehlt auf dem Server -> ganzes Dokument auslassen (nicht bauen -> 404).
+    BROKEN = "kaputt"
 }
 
 export type SpiderFile = {
