@@ -72,6 +72,10 @@ export class DocumentBuilder {
         const reference = metaData.Num !== undefined ? Array.isArray(metaData.Num) ? metaData.Num : [metaData.Num] : undefined
         const date = metaData.Datum !== undefined && metaData.Datum !== "0000-00-00" ? metaData.Datum : undefined
         const scrapedate = metaData.Scrapedate !== undefined && metaData.Scrapedate !== "0000-00-00" ? metaData.Scrapedate : "2020-01-01"
+        // Vom Scraper erkannte Dokumentsprache (de/fr/it). Ist sie gesetzt, wird
+        // sie als doc.language mitgeschickt -> autoritativ gegenueber der
+        // Tika-Spracherkennung der attachment-Pipeline (die bei OCR-Scans irrt).
+        const language = metaData.Sprache !== undefined && metaData.Sprache !== "" ? metaData.Sprache : undefined
 
         const doc: ELDocument = {
             id: this.getDocumentId(metaFileName),
@@ -98,6 +102,10 @@ export class DocumentBuilder {
 
         if (date !== undefined) {
             doc.date = date;
+        }
+
+        if (language !== undefined) {
+            doc.language = language;
         }
 
         doc.scrapedate = scrapedate

@@ -45,6 +45,7 @@ export type ELDocument = {
     deleted: boolean,
     source?: string,
     canton?: string,
+    language?: string,
     title?: IntText,
     abstract?: IntText,
     meta?: IntText,

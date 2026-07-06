@@ -303,7 +303,26 @@ export class SpiderProcessor {
         if (Object.keys(spiderFiles).length > 0) {
             spiderFilesList.push(spiderFiles);
         }
-        return spiderFilesList;
+
+        // Zu jeder (re)indexierten Gruppe die .json sicherstellen: DocumentBuilder braucht die
+        // Meta. War die .json im Index aktuell und wurde weggefiltert, hier aus dem Vollbestand
+        // nachziehen. Bleibt eine Gruppe ohne .json (keine Meta im Bestand), wird sie
+        // uebersprungen, statt den ganzen Request mit "missing json" abzubrechen.
+        const withMeta: Array<SpiderFiles> = [];
+        for (const grp of spiderFilesList) {
+            const someName = Object.keys(grp)[0];
+            const base = someName.substring(0, someName.lastIndexOf('.'));
+            const jsonName = `${base}.json`;
+            if (!grp.hasOwnProperty(jsonName)) {
+                if (spiderUpdate.dateien.hasOwnProperty(jsonName)) {
+                    grp[jsonName] = spiderUpdate.dateien[jsonName];
+                } else {
+                    continue;
+                }
+            }
+            withMeta.push(grp);
+        }
+        return withMeta;
     }
 
     private static getSequence(job?: string): number {
