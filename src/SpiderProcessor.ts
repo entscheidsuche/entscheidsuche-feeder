@@ -4,6 +4,7 @@ import Axios from "axios"
 import {ChunkQueue} from "./ChunkQueue";
 import https from "https";
 import fs from "fs";
+import { serializeError } from "serialize-error";
 
 export class SpiderProcessor {
 
@@ -158,6 +159,22 @@ export class SpiderProcessor {
         return `${this.elasticsearchIndex}-${spiderUpdate.spider.toLowerCase()}`;
     }
 
+    async reportStatus(spiderUpdate: SpiderUpdate, err?: any): Promise<void> {
+        return Axios.get(`${process.env.STATUS_REPORT_URL}`, {
+            params: {
+                index: `${process.env.FEEDER_ID}`,
+                spider: spiderUpdate.spider,
+                job: spiderUpdate.job,
+                status: err === undefined ? 'ok' : 'error',
+                message: err === undefined ? 'ok' : JSON.stringify(serializeError(err))
+            }
+        }).then(_ => {
+            console.log(`reported status for spider ${spiderUpdate.spider}, job ${spiderUpdate.job}`);
+        }).catch(reportErr => {
+            console.log(`error reporting status for spider ${spiderUpdate.spider}, job ${spiderUpdate.job}: ${JSON.stringify(serializeError(reportErr))}`);
+        });
+    }
+
     async processFiles(index: string, spiderUpdate: SpiderUpdate, spiderFilesList: Array<SpiderFiles>): Promise<void> {
         if (spiderFilesList.length === 0) {
             return; // Promise.resolve();
@@ -259,9 +276,20 @@ export class SpiderProcessor {
         }
         files.sort()
 
+        // Dokumente mit einer 'kaputt'-Datei (Inhaltsdatei fehlt auf dem Server -> Bauen
+        // wuerde 404) KOMPLETT auslassen, nicht nur die eine Datei. Sonst wuerde z.B. bei
+        // .html=kaputt / .json=identisch nur die .json indexiert (Teil-/kaputtes Dokument).
+        const kaputteBasen = new Set<string>();
+        for (let fileName of files) {
+            if (spiderUpdate.dateien[fileName].status === SpiderFileStatus.BROKEN) {
+                kaputteBasen.add(fileName.substring(0, fileName.lastIndexOf('.')));
+            }
+        }
+
         for (let fileName of files) {
             const spiderFile = spiderUpdate.dateien[fileName];
             const fileBase = fileName.substring(0, fileName.lastIndexOf('.'));
+            if (kaputteBasen.has(fileBase)) { continue; }   // ganzes Dokument auslassen
             const fileType = fileName.substring(fileName.lastIndexOf('.') + 1);
             const alternativeType = fileType === 'html' ? 'pdf' : (fileType === 'pdf') ? 'html' : 'json';
             const existingSequence: number =
@@ -270,7 +298,8 @@ export class SpiderProcessor {
                 spiderDictionary.hasOwnProperty(`${fileBase}.${alternativeType}`) ? spiderDictionary[`${fileBase}.${alternativeType}`] : -1;
             const skip = (fileType !== 'json' && existingSequence === -1) ? (alternativeSequence !== -1) : false;
             if (!skip && (spiderFile.status === SpiderFileStatus.UPDATE || spiderFile.status === SpiderFileStatus.NEW ||
-                (spiderFile.status === SpiderFileStatus.EQUAL &&
+                spiderFile.status === SpiderFileStatus.CHANGED_AGAIN ||   // anders_wieder_da: wie UPDATE, immer indexieren
+                ((spiderFile.status === SpiderFileStatus.EQUAL || spiderFile.status === SpiderFileStatus.EQUAL_AGAIN) &&
                     SpiderProcessor.getSequence(spiderFile.last_change) > existingSequence) ||
                 (spiderFile.status === SpiderFileStatus.DELETED && existingSequence !== -1))) {
                 if (Object.keys(spiderFiles).length == 0) {
