@@ -155,6 +155,7 @@ export class ChunkProcessor {
             responseData = response.data;
         }).catch((error) => {
             console.log(error);
+            throw(error);
         });
         return responseData;
     }
@@ -170,6 +171,7 @@ export class ChunkProcessor {
             })
             .catch((error) => {
                 console.log(error);
+                throw(error);
             });
         return responseData;
 
@@ -185,6 +187,7 @@ export class ChunkProcessor {
             })
             .catch((error) => {
                 console.log(error);
+                throw(error);
             })
         return responseData;
     }

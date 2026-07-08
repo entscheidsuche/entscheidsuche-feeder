@@ -35,7 +35,8 @@ export class SpiderProcessor {
         const dropIndex = spiderUpdate.jobtyp === 'neu'
         return this.fetchExistingSpider(spiderUpdate.spider, index, dropIndex)
             .then(spiderDictionary => SpiderProcessor.filterSpiderFiles(spiderDictionary, spiderUpdate).reverse())
-            .then(spiderFilesList => this.processFiles(index, spiderUpdate, spiderFilesList));
+            .then(spiderFilesList => this.processFiles(index, spiderUpdate, spiderFilesList))
+            .then(() => this.chunkQueue.finishEnqueue(spiderUpdate));
     }
 
     async fetchExistingSpider(spider: string, index: string, dropIndex: boolean): Promise<SpiderDictionary> {
@@ -159,22 +160,6 @@ export class SpiderProcessor {
         return `${this.elasticsearchIndex}-${spiderUpdate.spider.toLowerCase()}`;
     }
 
-    async reportStatus(spiderUpdate: SpiderUpdate, err?: any): Promise<void> {
-        return Axios.get(`${process.env.STATUS_REPORT_URL}`, {
-            params: {
-                index: `${process.env.FEEDER_ID}`,
-                spider: spiderUpdate.spider,
-                job: spiderUpdate.job,
-                status: err === undefined ? 'ok' : 'error',
-                message: err === undefined ? 'ok' : JSON.stringify(serializeError(err))
-            }
-        }).then(_ => {
-            console.log(`reported status for spider ${spiderUpdate.spider}, job ${spiderUpdate.job}`);
-        }).catch(reportErr => {
-            console.log(`error reporting status for spider ${spiderUpdate.spider}, job ${spiderUpdate.job}: ${JSON.stringify(serializeError(reportErr))}`);
-        });
-    }
-
     async processFiles(index: string, spiderUpdate: SpiderUpdate, spiderFilesList: Array<SpiderFiles>): Promise<void> {
         if (spiderFilesList.length === 0) {
             return; // Promise.resolve();
@@ -190,7 +175,7 @@ export class SpiderProcessor {
                 this.documentBuilder.build(spiderUpdate, spiderFiles)
                     .then(doc =>
                         this.upsert(index, spiderUpdate, doc)
-                            .then(() => this.chunkQueue.enqueue(doc.id)))
+                            .then(() => this.chunkQueue.enqueue(doc.id, spiderUpdate)))
                     .catch(err => console.warn(`Failed to process file:`, err)));
         }
         console.log(spiderFilesList.length);

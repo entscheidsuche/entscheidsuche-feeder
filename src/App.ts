@@ -6,12 +6,14 @@ import { serializeError } from "serialize-error";
 import {ChunkProcessor} from "./ChunkProcessor";
 import {ChunkQueue} from "./ChunkQueue";
 import {ChunkQueueProcessor} from "./ChunkQueueProcessor";
+import {ReportingUtil} from "./ReportingUtil";
 
 const app = express()
 const chunkQueue = new ChunkQueue();
 const processor = new SpiderProcessor(chunkQueue);
 const chunkProcessor = new ChunkProcessor();
 const chunkQueueProcessor = new ChunkQueueProcessor(chunkQueue, chunkProcessor);
+const reportingUtil = new ReportingUtil();
 chunkQueueProcessor.start();
 
 app.use(cors());
@@ -22,17 +24,21 @@ app.get("/", (req: Request, res: Response) => {
   res.status(200).send("use post method to upload a spider file");
 })
 
+app.get("/status", (req: Request, res: Response) => {
+  res.status(200).json(chunkQueue.getQueueStatus());
+})
+
 app.post("/", async (req, res) => {
   const spiderUpdate:SpiderUpdate = req.body;
   console.log(`${new Date().toISOString()} processing spider ${spiderUpdate.spider} with timestamp ${spiderUpdate.time}`);
   try {
     await processor.process(spiderUpdate);
     console.log(`${new Date().toISOString()} finished processing spider ${spiderUpdate.spider} with timestamp ${spiderUpdate.time}`);
-    await processor.reportStatus(spiderUpdate);
+    await reportingUtil.reportStatus(spiderUpdate);
     return res.status(201).send();
   } catch (err) {
     console.log(`${new Date().toISOString()} error in processing spider ${spiderUpdate.spider} with timestamp ${spiderUpdate.time}: ${JSON.stringify(serializeError(err))}`);
-    await processor.reportStatus(spiderUpdate, err);
+    await reportingUtil.reportStatus(spiderUpdate, err);
     return res.status(500).json(serializeError(err));
   }
 });

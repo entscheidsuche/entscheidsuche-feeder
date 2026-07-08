@@ -15,7 +15,7 @@ export class ChunkQueueProcessor {
         this.chunkProcessor = chunkProcessor;
         this.pollIntervalMs = parseInt(`${process.env.CHUNK_QUEUE_POLL_INTERVAL_MS || 5000}`);
         this.batchSize = parseInt(`${process.env.CHUNK_QUEUE_BATCH_SIZE || 1}`);
-        this.maxAttempts = parseInt(`${process.env.CHUNK_QUEUE_MAX_ATTEMPTS || 3}`);
+        this.maxAttempts = parseInt(`${process.env.CHUNK_QUEUE_MAX_ATTEMPTS || 1}`);
     }
 
     start(): void {
@@ -46,7 +46,7 @@ export class ChunkQueueProcessor {
     }
 
     private async processBatch(): Promise<boolean> {
-        const items = await this.queue.claimBatch(this.batchSize);
+        const items = await this.queue.claimBatch(this.batchSize, this.maxAttempts);
         if (items.length === 0) {
             return false;
         }
