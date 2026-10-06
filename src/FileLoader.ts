@@ -29,7 +29,7 @@ class FSFileLoader implements FileLoader {
 
 }
 
-class HTTPSFileLoader implements FileLoader {
+export class HTTPSFileLoader implements FileLoader {
 
     constructor(private basePath: string) {}
 
@@ -44,6 +44,9 @@ class HTTPSFileLoader implements FileLoader {
             } else {
                 message.pipe(readableStream);
             }
+        });
+        request.on('error', function(err) {
+            readableStream.emit('error', err);
         });
         return readableStream;
     }

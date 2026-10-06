@@ -25,7 +25,15 @@ export class SpiderProcessor {
         const dropIndex = spiderUpdate.jobtyp === 'neu'
         return this.fetchExistingSpider(spiderUpdate.spider, index, dropIndex)
             .then(spiderDictionary => SpiderProcessor.filterSpiderFiles(spiderDictionary, spiderUpdate).reverse())
-            .then(spiderFilesList => this.processFiles(index, spiderUpdate, spiderFilesList));
+            .then(spiderFilesList => this.processFiles(index, spiderUpdate, spiderFilesList))
+            .then(errors => {
+                if (errors && errors.length > 0) {
+                    throw {
+                        message: `finished processing spider ${spiderUpdate.spider} with ${errors.length} error(s)`,
+                        errors: errors
+                    };
+                }
+            });
     }
 
     async fetchExistingSpider(spider: string, index: string, dropIndex: boolean): Promise<SpiderDictionary> {
@@ -168,9 +176,14 @@ export class SpiderProcessor {
         });
     }
 
-    async processFiles(index: string, spiderUpdate: SpiderUpdate, spiderFilesList: Array<SpiderFiles>): Promise<void> {
+    async processFiles(
+        index: string,
+        spiderUpdate: SpiderUpdate,
+        spiderFilesList: Array<SpiderFiles>,
+        errors: Array<{ document: string; error: any }> = []
+    ): Promise<Array<{ document: string; error: any }>> {
         if (spiderFilesList.length === 0) {
-            return Promise.resolve();
+            return Promise.resolve(errors);
         }
         const processingSpiderFiles: Array<Promise<void>> = [];
         for (let idx = 0; idx < this.parallel; idx++) {
@@ -179,10 +192,37 @@ export class SpiderProcessor {
                 break;
             }
             processingSpiderFiles.push(
-                this.documentBuilder.build(spiderUpdate, spiderFiles)
-                    .then(doc => this.upsert(index, spiderUpdate, doc)));
+                this.processSingleDocument(index, spiderUpdate, spiderFiles, errors)
+            );
         }
-        return Promise.all(processingSpiderFiles).then(_ => this.processFiles(index, spiderUpdate, spiderFilesList));
+        return Promise.all(processingSpiderFiles).then(_ => this.processFiles(index, spiderUpdate, spiderFilesList, errors));
+    }
+
+    private async processSingleDocument(
+        index: string,
+        spiderUpdate: SpiderUpdate,
+        spiderFiles: SpiderFiles,
+        errors: Array<{ document: string; error: any }>,
+        maxRetries: number = 2
+    ): Promise<void> {
+        const docId = DocumentBuilder.getDocumentId(spiderFiles);
+        let attempt = 0;
+        while (attempt <= maxRetries) {
+            try {
+                const doc = await this.documentBuilder.build(spiderUpdate, spiderFiles);
+                await this.upsert(index, spiderUpdate, doc);
+                return;
+            } catch (err: any) {
+                attempt++;
+                if (attempt <= maxRetries) {
+                    console.log(`retry ${attempt}/${maxRetries} for document ${docId}: ${JSON.stringify(serializeError(err))}`);
+                    await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+                } else {
+                    console.log(`error processing document ${docId}: ${JSON.stringify(serializeError(err))}`);
+                    errors.push({ document: docId, error: serializeError(err) });
+                }
+            }
+        }
     }
 
     async upsert(index: string, spiderUpdate: SpiderUpdate, document: ELDocument): Promise<void> {

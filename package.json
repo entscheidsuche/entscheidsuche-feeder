@@ -10,7 +10,8 @@
   "scripts": {
     "serve": "nodemon -r dotenv/config ./src/App.ts",
     "start": "node ./build/App.js",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "ts-node test/SpiderProcessor.test.ts"
   },
   "keywords": [],
   "author": "",
