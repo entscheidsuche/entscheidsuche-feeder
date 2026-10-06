@@ -154,7 +154,16 @@ export class DocumentBuilder {
         });
     }
 
-    private static getDocumentId(metaFileName: string): string {
-        return metaFileName.substring(metaFileName.lastIndexOf("/") + 1, metaFileName.lastIndexOf("."));
+    public static getDocumentId(fileOrFiles: string | SpiderFiles): string {
+        if (typeof fileOrFiles === "string") {
+            return fileOrFiles.substring(fileOrFiles.lastIndexOf("/") + 1, fileOrFiles.lastIndexOf("."));
+        }
+        for (const fileName in fileOrFiles) {
+            if (fileName.endsWith(".json")) {
+                return fileName.substring(fileName.lastIndexOf("/") + 1, fileName.lastIndexOf("."));
+            }
+        }
+        const first = Object.keys(fileOrFiles)[0] || "";
+        return first.substring(first.lastIndexOf("/") + 1, first.lastIndexOf("."));
     }
 }
