@@ -54,6 +54,68 @@ export class ElasticUtil {
 
     }
 
+    // Returns the subset of ids that already exist in the index, with one _mget instead of one HEAD per id.
+    async existingIds(index: string, ids: Array<string>): Promise<Set<string>> {
+        if (ids.length === 0) {
+            return new Set();
+        }
+        return Axios.post(`${this.elasticsearchHost}/${index}/_mget?_source=false`, {ids}, {
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            auth: {
+                username: this.elasticsearchUser,
+                password: this.elasticsearchPassword
+            },
+            httpsAgent: this.agent
+        }).then(resp => {
+            const docs: Array<any> = resp.data.docs ?? [];
+            return new Set(docs.filter(doc => doc.found).map(doc => doc._id as string));
+        }).catch(err => {
+            throw {
+                index,
+                message: err.message,
+                code: err.code,
+                response: err.response?.data?.error
+            };
+        });
+    }
+
+    async bulkIndex(index: string, docs: Array<{id: string, body: any}>): Promise<void> {
+        if (docs.length === 0) {
+            return;
+        }
+        const ndjson = docs
+            .map(doc => JSON.stringify({index: {_index: index, _id: doc.id}}) + '\n' + JSON.stringify(doc.body))
+            .join('\n') + '\n';
+        const resp = await Axios.post(`${this.elasticsearchHost}/_bulk`, ndjson, {
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            auth: {
+                username: this.elasticsearchUser,
+                password: this.elasticsearchPassword
+            },
+            headers: {
+                'Content-Type': 'application/x-ndjson'
+            },
+            httpsAgent: this.agent
+        }).catch(err => {
+            throw {
+                index,
+                message: err.message,
+                code: err.code,
+                response: err.response?.data?.error
+            };
+        });
+        if (resp.data.errors) {
+            const failed = (resp.data.items as Array<any>)
+                .map(item => item.index)
+                .filter(result => result.error !== undefined)
+                .map(result => ({id: result._id, error: result.error}));
+            throw {index, message: `bulk indexing failed for ${failed.length} of ${docs.length} documents`, failed};
+        }
+        console.log(`bulk indexed ${docs.length} documents into ${index}`);
+    }
+
     async existsIndex(index: string): Promise<boolean> {
         return Axios.head(`${this.elasticsearchHost}/${index}`, {
             maxContentLength: Infinity,

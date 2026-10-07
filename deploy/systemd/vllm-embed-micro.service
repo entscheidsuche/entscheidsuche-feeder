@@ -1,0 +1,38 @@
+# systemd unit for the vLLM embedding server used for micro chunks (Qwen/Qwen3-Embedding-0.6B).
+#
+# Install (vLLM in a virtualenv, e.g. python3 -m venv ~/vllm-venv && ~/vllm-venv/bin/pip install vllm):
+#   sudo cp deploy/systemd/vllm-embed-micro.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now vllm-embed-micro
+# Logs:
+#   journalctl -u vllm-embed-micro -f
+#
+# Both embedding servers share one GPU: the --gpu-memory-utilization values of
+# vllm-embed-big and vllm-embed-micro must add up to less than 1.0. Older vLLM
+# versions use --task embed instead of --runner pooling.
+
+[Unit]
+Description=vLLM embedding server (micro chunks, Qwen/Qwen3-Embedding-0.6B)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=piribauer
+WorkingDirectory=/home/piribauer
+ExecStart=/home/piribauer/vllm-venv/bin/vllm serve Qwen/Qwen3-Embedding-0.6B \
+    --runner pooling \
+    --served-model-name qwen3-embedding-0.6b \
+    --host 127.0.0.1 --port 8002 \
+    --gpu-memory-utilization 0.25 \
+    --max-model-len 2048
+# Only count as started once the model is loaded and /health answers, so the
+# feeder starts against a ready server. Give up at once if vLLM has exited.
+ExecStartPost=/bin/sh -c 'until curl -sf -o /dev/null http://127.0.0.1:8002/health; do kill -0 "$$MAINPID" 2>/dev/null || exit 1; sleep 2; done'
+# Downloading and loading the model can take a while on first start.
+TimeoutStartSec=900
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

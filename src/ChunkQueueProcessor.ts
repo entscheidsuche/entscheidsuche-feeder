@@ -50,15 +50,14 @@ export class ChunkQueueProcessor {
         if (items.length === 0) {
             return false;
         }
-        for (const item of items) {
-            await this.processItem(item);
-        }
+        // Process the claimed documents in parallel; vLLM batches their concurrent embedding requests.
+        await Promise.all(items.map(item => this.processItem(item)));
         return true;
     }
 
     private async processItem(item: ChunkQueueItem): Promise<void> {
         try {
-            await this.chunkProcessor.process(item.documentId);
+            await this.chunkProcessor.processDocument(item.documentId);
             await this.queue.complete(item);
         } catch (err) {
             console.error(`failed to process chunk job for document ${item.documentId}:`, err);

@@ -1,0 +1,39 @@
+# systemd unit for the Elasticsearch tarball install.
+#
+# Install:
+#   sudo cp deploy/systemd/elasticsearch.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now elasticsearch
+# Logs:
+#   journalctl -u elasticsearch -f
+#
+# Check that the Elasticsearch path below matches the server.
+
+[Unit]
+Description=Elasticsearch
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# sd_notify is only supported by the deb/rpm packages, not the tarball.
+Type=simple
+User=piribauer
+WorkingDirectory=/home/piribauer/elasticsearch-9.2.2
+ExecStart=/home/piribauer/elasticsearch-9.2.2/bin/elasticsearch
+# Only count as started once HTTPS answers (a 401 is fine), so units ordered
+# after this one (the feeder) start against a running cluster. Give up at once
+# if Elasticsearch itself has exited. ($$ passes a literal $ to the shell.)
+ExecStartPost=/bin/sh -c 'until curl -sk -o /dev/null https://localhost:9200; do kill -0 "$$MAINPID" 2>/dev/null || exit 1; sleep 2; done'
+TimeoutStartSec=300
+LimitNOFILE=65535
+LimitNPROC=4096
+Restart=on-failure
+RestartSec=10
+# 78 = configuration or bootstrap check error; restarting will not fix it.
+RestartPreventExitStatus=78
+# 143 = terminated by SIGTERM, which is a normal stop.
+SuccessExitStatus=143
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

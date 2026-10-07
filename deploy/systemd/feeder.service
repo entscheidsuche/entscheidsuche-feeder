@@ -1,0 +1,30 @@
+# systemd unit for the entscheidsuche feeder.
+#
+# Install (after `npm ci && npm run build`):
+#   sudo cp deploy/systemd/feeder.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now feeder
+# Logs:
+#   journalctl -u feeder -f
+
+[Unit]
+Description=entscheidsuche feeder
+# Pulls in Elasticsearch and the vLLM embedding servers and starts after them. The feeder retries
+# on its own if any of them is unavailable, so they are not hard requirements.
+Wants=network-online.target elasticsearch.service vllm-embed-big.service vllm-embed-micro.service
+After=network-online.target elasticsearch.service vllm-embed-big.service vllm-embed-micro.service
+
+[Service]
+Type=simple
+User=piribauer
+WorkingDirectory=/home/piribauer/entscheidsuche-feeder
+# Plain KEY=value lines, no `export`. `npm start` does not load .env itself.
+EnvironmentFile=/home/piribauer/entscheidsuche-feeder/.env
+ExecStart=/usr/bin/node build/App.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

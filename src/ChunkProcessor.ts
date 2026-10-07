@@ -1,5 +1,6 @@
 import Axios from "axios";
 import {ElasticUtil} from "./ElasticUtil";
+import {EmbeddingClient} from "./EmbeddingClient";
 import * as https from "https";
 import fs from "fs";
 import * as http from "http";
@@ -7,8 +8,6 @@ import * as http from "http";
 export class ChunkProcessor {
 
     private chunkApiUrl: string;
-    private llmApiUrl: string;
-    private llmModel: string;
 
     private elasticsearchHost: string;
     private elasticsearchUser: string;
@@ -20,15 +19,19 @@ export class ChunkProcessor {
 
     private noKeepAliveAgent : http.Agent;
 
-    private embedding_index;
-
+    // Big chunks and micro chunks are embedded by different models, each served by its own vLLM instance.
+    private bigEmbedder: EmbeddingClient;
+    private microEmbedder: EmbeddingClient;
+    readonly bigIndex: string;
+    readonly microIndex: string;
+    private readonly bigDims: number;
+    private readonly microDims: number;
+    private readonly fetchConcurrency: number;
 
     private elasticUtil: ElasticUtil;
 
     constructor() {
         this.chunkApiUrl = `${process.env.CHUNK_API_URL}`;
-        this.llmApiUrl = `${process.env.LLM_API_URL}`;
-        this.llmModel = `${process.env.LLM_MODEL}`;
         this.elasticsearchHost = `${process.env.ELASTICSEARCH_HOST}`;
         this.elasticsearchUser = `${process.env.ELASTICSEARCH_USER}`;
         this.elasticsearchPassword = `${process.env.ELASTICSEARCH_PASSWORD}`;
@@ -39,40 +42,53 @@ export class ChunkProcessor {
             rejectUnauthorized: false
         });
         this.noKeepAliveAgent = new http.Agent({keepAlive: false});
-        this.embedding_index = "embeddings_" + this.llmModel + "_2";
+        this.bigEmbedder = new EmbeddingClient(`${process.env.EMBED_BIG_API_URL}`, `${process.env.EMBED_BIG_MODEL}`);
+        this.microEmbedder = new EmbeddingClient(`${process.env.EMBED_MICRO_API_URL}`, `${process.env.EMBED_MICRO_MODEL}`);
+        this.bigIndex = `${process.env.EMBED_BIG_INDEX}`;
+        this.microIndex = `${process.env.EMBED_MICRO_INDEX}`;
+        this.bigDims = parseInt(`${process.env.EMBED_BIG_DIMS || 4096}`);
+        this.microDims = parseInt(`${process.env.EMBED_MICRO_DIMS || 1024}`);
+        this.fetchConcurrency = parseInt(`${process.env.CHUNK_FETCH_CONCURRENCY || 8}`);
+    }
+
+    async ensureIndices(): Promise<void> {
+        await this.createOrUpdateEmbeddingIndex(this.bigIndex);
+        await this.createOrUpdateMicroChunkIndex(this.microIndex);
     }
 
     async process(documentId: string): Promise<void> {
+        await this.processChunks(await this.fetchChunkMetadata(documentId), documentId);
+    }
+
+    // Indexes big chunks and micro chunks of a document, fetching its chunk metadata only once.
+    async processDocument(documentId: string): Promise<void> {
+        const chunksMeta = await this.fetchChunkMetadata(documentId);
+        await this.processChunks(chunksMeta, documentId);
+        await this.processMicroChunks(chunksMeta, documentId);
+    }
+
+    async processChunks(chunksMeta: any, documentId: string): Promise<void> {
         try {
-            const startTimeFetch = Date.now();
-            const chunksMeta = await this.fetchChunkMetadata(documentId);
-            const endTimeFetch = Date.now();
-            const index = this.embedding_index;
-            console.log(`fetched chunkMeta in ${endTimeFetch - startTimeFetch} ms`);
-            for (const chunk of chunksMeta.Chunks) {
-                chunk.id = chunk.id.replaceAll("/", "_");
-                if(await this.elasticUtil.existsDocument(chunk.id, index)) {
-                    continue;
-                }
-                console.log(`${new Date().toISOString()} processing chunk ${chunk.id}`);
-                const startTimeFetchChunk = Date.now();
-                const chunkData = await this.fetchChunk(chunk.url);
-                const endTimeFetchChunk = Date.now();
-                console.log(`fetched chunk in ${endTimeFetchChunk - startTimeFetchChunk} ms`);
-                if (chunkData) {
-                    const embeddingResponse = await this.getEmbedding(chunkData.Chunktext);
-                    if (embeddingResponse) {
-                        const embedding = embeddingResponse.data[0].embedding;
-                        const endTimeEmbed = Date.now();
-                        console.log(`got embedding in ${endTimeEmbed - endTimeFetch} ms`);
-                        if (embedding) {
-                            await this.upsert(chunk.id, embedding, documentId, chunkData);
-                            const endTimeUpsert = Date.now();
-                            console.log(`upserted chunk in ${endTimeUpsert - endTimeEmbed} ms`);
-                        }
-                    }
-                }
+            const startTime = Date.now();
+            const chunks: Array<any> = chunksMeta.Chunks.map((chunk: any) => ({...chunk, id: ChunkProcessor.normalizeId(chunk.id)}));
+            const existing = await this.elasticUtil.existingIds(this.bigIndex, chunks.map(chunk => chunk.id));
+            const missing = chunks.filter(chunk => !existing.has(chunk.id));
+            if (missing.length === 0) {
+                return;
             }
+            const fetched = await this.mapWithConcurrency(missing, chunk => this.fetchChunk(chunk.url));
+            const toEmbed = missing
+                .map((chunk, i) => ({chunk, chunkData: fetched[i]}))
+                .filter(entry => entry.chunkData && entry.chunkData.Chunktext);
+            const endTimeFetch = Date.now();
+            const embeddings = await this.bigEmbedder.embed(toEmbed.map(entry => entry.chunkData.Chunktext));
+            const endTimeEmbed = Date.now();
+            await this.elasticUtil.bulkIndex(this.bigIndex, toEmbed.map((entry, i) => ({
+                id: entry.chunk.id,
+                body: this.toBigDoc(embeddings[i], documentId, entry.chunkData)
+            })));
+            console.log(`${documentId}: ${toEmbed.length} chunks, fetch ${endTimeFetch - startTime} ms, ` +
+                `embed ${endTimeEmbed - endTimeFetch} ms, index ${Date.now() - endTimeEmbed} ms`);
         }
         catch (error) {
             console.error(error);
@@ -94,19 +110,39 @@ export class ChunkProcessor {
         }
     }
 
+    // Embeds the micro chunks of all selected big chunks of a document together, so they are sent in
+    // as few embedding requests as possible.
     async processMicroChunks(chunksMeta: any, documentId: string, chunkId?: string): Promise<void> {
         try {
+            const startTime = Date.now();
+            const microChunks: Array<{meta: any, id: string, chunkId: string}> = [];
             for (const chunk of chunksMeta.Chunks) {
-                if (chunkId) {
-                    if (chunkId === chunk.id.replaceAll("/", "_")) {
-                        await this.processMicroChunksOfSingleChunk(chunk, documentId)
-                    }
+                const normalizedChunkId = ChunkProcessor.normalizeId(chunk.id);
+                if (chunkId && chunkId !== normalizedChunkId) {
+                    continue;
                 }
-                else {
-                    await this.processMicroChunksOfSingleChunk(chunk, documentId)
+                for (const microChunk of chunk.MicroChunks) {
+                    microChunks.push({meta: microChunk, id: ChunkProcessor.normalizeId(microChunk.id), chunkId: normalizedChunkId});
                 }
-
             }
+            const existing = await this.elasticUtil.existingIds(this.microIndex, microChunks.map(microChunk => microChunk.id));
+            const missing = microChunks.filter(microChunk => !existing.has(microChunk.id));
+            if (missing.length === 0) {
+                return;
+            }
+            const texts = await this.mapWithConcurrency(missing, microChunk => this.fetchChunk(microChunk.meta.url));
+            const toEmbed = missing
+                .map((microChunk, i) => ({microChunk, chunkText: texts[i]}))
+                .filter(entry => entry.chunkText);
+            const endTimeFetch = Date.now();
+            const embeddings = await this.microEmbedder.embed(toEmbed.map(entry => entry.chunkText));
+            const endTimeEmbed = Date.now();
+            await this.elasticUtil.bulkIndex(this.microIndex, toEmbed.map((entry, i) => ({
+                id: entry.microChunk.id,
+                body: this.toMicroDoc(entry.microChunk.meta, embeddings[i], documentId, entry.chunkText, entry.microChunk.chunkId)
+            })));
+            console.log(`${documentId}: ${toEmbed.length} micro chunks, fetch ${endTimeFetch - startTime} ms, ` +
+                `embed ${endTimeEmbed - endTimeFetch} ms, index ${Date.now() - endTimeEmbed} ms`);
         }
         catch (error) {
             console.error(error);
@@ -114,33 +150,22 @@ export class ChunkProcessor {
         }
     }
 
-    async processMicroChunksOfSingleChunk(chunk: any, documentId: string){
-        const index = "embeddings_" + this.llmModel + "_micro_new";
-        for (const microChunk of chunk.MicroChunks) {
-            const microChunkId = microChunk.id.replaceAll("/", "_");
-            if(await this.elasticUtil.existsDocument(microChunkId, index)) {
-                continue;
+    private static normalizeId(id: string): string {
+        return id.replaceAll("/", "_");
+    }
+
+    // Like Promise.all over items.map(fn), but with at most fetchConcurrency calls in flight.
+    private async mapWithConcurrency<T, R>(items: Array<T>, fn: (item: T) => Promise<R>): Promise<Array<R>> {
+        const results: Array<R> = new Array(items.length);
+        let next = 0;
+        const worker = async () => {
+            while (next < items.length) {
+                const i = next++;
+                results[i] = await fn(items[i]);
             }
-            console.log(`${new Date().toISOString()} processing chunk ${microChunkId}`);
-            const startTimeFetch = Date.now();
-            const chunkText = await this.fetchChunk(microChunk.url);
-            const endTimeFetch = Date.now();
-            console.log(`fetched chunk in ${endTimeFetch - startTimeFetch} ms`);
-            if (chunkText) {
-                const embeddingResponse = await this.getEmbedding(chunkText);
-                if (embeddingResponse) {
-                    const embedding = embeddingResponse.data[0].embedding;
-                    const endTimeEmbed = Date.now();
-                    console.log(`got embedding in ${endTimeEmbed - endTimeFetch} ms`);
-                    if (embedding) {
-                        const chunkId = chunk.id.replaceAll("/", "_");
-                        await this.upsertMicroChunk(microChunk, embedding, documentId, chunkText, chunkId);
-                        const endTimeUpsert = Date.now();
-                        console.log(`upserted chunk in ${endTimeUpsert - endTimeEmbed} ms`);
-                    }
-                }
-            }
-        }
+        };
+        await Promise.all(Array.from({length: Math.min(this.fetchConcurrency, items.length)}, worker));
+        return results;
     }
 
     async fetchChunkMetadata(dokid: string): Promise<any> {
@@ -177,21 +202,6 @@ export class ChunkProcessor {
 
     }
 
-    async getEmbedding(chunkText: string): Promise<any> {
-        let responseData;
-        let chunkData: {input: string; model: string, encoding_format: string} = {input: chunkText, encoding_format: "float", model: this.llmModel};
-
-        await Axios.post(this.llmApiUrl + '/v1/embeddings', chunkData, {})
-            .then((response) => {
-                responseData = response.data;
-            })
-            .catch((error) => {
-                console.log(error);
-                throw(error);
-            })
-        return responseData;
-    }
-
     async createOrUpdateEmbeddingIndex(name: string): Promise<any> {
         try {
             const properties = {
@@ -201,7 +211,7 @@ export class ChunkProcessor {
                     },
                     "embedding": {
                         "type": "dense_vector",
-                        "dims": 4096,
+                        "dims": this.bigDims,
                         "index": true,
                         "similarity": "cosine",
                     },
@@ -280,7 +290,7 @@ export class ChunkProcessor {
                     },
                     "embedding": {
                         "type": "dense_vector",
-                        "dims": 4096,
+                        "dims": this.microDims,
                         "index": true,
                         "similarity": "cosine",
                     },
@@ -290,7 +300,7 @@ export class ChunkProcessor {
                     "offset": {
                         "type": "integer",
                     },
-                    "length": {
+                    "len": {
                         "type": "integer",
                     },
                     "chunkId": {
@@ -321,14 +331,8 @@ export class ChunkProcessor {
 
     }
 
-    async upsert(id: string, embedding: Array<number>, documentId: string, chunkData: any): Promise<void> {
-        const index = this.embedding_index;
-
-        if (!await this.elasticUtil.existsIndex(index)) {
-            await this.createOrUpdateEmbeddingIndex(index);
-        }
-
-        const data ={
+    toBigDoc(embedding: Array<number>, documentId: string, chunkData: any): any {
+        return {
             embedding: embedding,
             documentId: documentId,
             chunkText: chunkData['Chunktext'],
@@ -347,26 +351,7 @@ export class ChunkProcessor {
             checkSum: chunkData['Checksum'],
             scrape: chunkData['Scrapedate'],
             hierarchy: this.buildHierarchy(chunkData['Signatur']),
-    }
-        return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${id}`, data, {
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity,
-            auth: {
-                username: this.elasticsearchUser,
-                password: this.elasticsearchPassword
-            },
-            httpsAgent: this.agent
-        }).then(() => {
-            console.log(`inserting document ${id}`)
-        }).catch(err => {
-            if (err.response && err.response.data && err.response.data.error) {
-                throw { document: id, response: err.response.data.error }
-            } else {
-                throw { document: id, response: err };
-            }
-        });
-
-
+        };
     }
 
     buildHierarchy(signature: string): string[] {
@@ -382,41 +367,15 @@ export class ChunkProcessor {
         return result;
     }
 
-    async upsertMicroChunk(microChunkMeta: any, embedding: Array<number>, documentId: string, chunkText: string, chunkId: string): Promise<void> {
-        const index = "embeddings_" + this.llmModel + "_micro_new";
-
-        if (!await this.elasticUtil.existsIndex(index)) {
-            await this.createOrUpdateMicroChunkIndex(index);
-        }
-
-        const data ={
+    toMicroDoc(microChunkMeta: any, embedding: Array<number>, documentId: string, chunkText: string, chunkId: string): any {
+        return {
             embedding: embedding,
             documentId: documentId,
             chunkText: chunkText,
             offset: microChunkMeta.offset,
             len: microChunkMeta.len,
             chunkId: chunkId
-        }
-        const microChunkId = microChunkMeta.id.replaceAll("/", "_");
-        return Axios.put(`${this.elasticsearchHost}/${index}/_doc/${microChunkId}`, data, {
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity,
-            auth: {
-                username: this.elasticsearchUser,
-                password: this.elasticsearchPassword
-            },
-            httpsAgent: this.agent
-        }).then(() => {
-            console.log(`inserting document ${microChunkMeta.id}`)
-        }).catch(err => {
-            if (err.response && err.response.data && err.response.data.error) {
-                throw { document: microChunkMeta.id, response: err.response.data.error }
-            } else {
-                throw { document: microChunkMeta.id, response: err };
-            }
-        });
-
-
+        };
     }
 
     public async importAll(copyDocument: boolean, indexMicroChunks: boolean): Promise<any> {
@@ -427,7 +386,9 @@ export class ChunkProcessor {
                 }
             },
             "size": 50,
-            "sort": []
+            "sort": [],
+            // Without this, hits.total is capped at 10000 and the progress total is wrong.
+            "track_total_hits": true
         }
 
         let response = await Axios.post(this.searchUrl + 'entscheidsuche.v2*/_search?scroll=30m', scrollSearch, {
@@ -440,21 +401,27 @@ export class ChunkProcessor {
         let scrollId = response._scroll_id
         const totalCount = response.hits.total.value
         let count = 0;
+        let failed = 0;
+        const startTime = Date.now();
+        console.log(`${new Date().toISOString()} import started: ${totalCount} documents ` +
+            `(copyDocument ${copyDocument}, indexMicroChunks ${indexMicroChunks})`);
         while(response.hits.hits.length > 0) {
             try{
                 for (const hit of response.hits.hits) {
-                    console.log(`${count}/${totalCount}`);
-                    console.log(hit._id);
+                    const docStart = Date.now();
                     try {
                         if (copyDocument) await this.processImportHits(hit)
-                        await this.process(hit._id)
-                        if (indexMicroChunks) await this.indexMicroChunks(hit._id)
+                        if (indexMicroChunks) await this.processDocument(hit._id)
+                        else await this.process(hit._id)
+                        console.log(`import ${count + 1}/${totalCount}: ${hit._id} done in ${Date.now() - docStart} ms`);
                     }
                     catch(err) {
-                        console.error(err)
+                        failed++;
+                        console.error(`import ${count + 1}/${totalCount}: ${hit._id} failed after ${Date.now() - docStart} ms:`, err)
                     }
                     count++;
                 }
+                this.logImportProgress(count, totalCount, failed, startTime);
                 if (count>totalCount) break;
                 response = await Axios.post(this.searchUrl + '_search/scroll', {
                     scroll_id: scrollId,
@@ -470,14 +437,24 @@ export class ChunkProcessor {
                 scrollId = response._scroll_id
             }
             catch(error) {
-                console.error(error);
+                console.error(`import aborted after ${count}/${totalCount} documents:`, error);
                 break
             }
 
         }
+        const elapsedMin = ((Date.now() - startTime) / 60000).toFixed(1);
+        console.log(`${new Date().toISOString()} import finished: ${count}/${totalCount} documents processed, ` +
+            `${failed} failed, ${elapsedMin} min`);
+    }
 
-
-
+    private logImportProgress(count: number, totalCount: number, failed: number, startTime: number): void {
+        const elapsedMs = Date.now() - startTime;
+        const docsPerMin = count / (elapsedMs / 60000);
+        const remainingMin = docsPerMin > 0 ? (totalCount - count) / docsPerMin : 0;
+        const percent = totalCount > 0 ? (100 * count / totalCount).toFixed(1) : '100.0';
+        console.log(`${new Date().toISOString()} import progress: ${count}/${totalCount} (${percent}%), ` +
+            `${failed} failed, ${docsPerMin.toFixed(1)} docs/min, ` +
+            `elapsed ${(elapsedMs / 60000).toFixed(1)} min, ETA ${remainingMin.toFixed(1)} min`);
     }
 
     //Importing data to Test-ElasticSearch

@@ -14,7 +14,9 @@ const processor = new SpiderProcessor(chunkQueue);
 const chunkProcessor = new ChunkProcessor();
 const chunkQueueProcessor = new ChunkQueueProcessor(chunkQueue, chunkProcessor);
 const reportingUtil = new ReportingUtil();
-chunkQueueProcessor.start();
+chunkProcessor.ensureIndices()
+    .catch(err => console.error(`failed to create embedding indices:`, err))
+    .then(() => chunkQueueProcessor.start());
 
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
@@ -94,7 +96,7 @@ app.post("/import", async (req, res) => {
 
 app.get("/createChunkIndex", async (req, res) => {
     try {
-        await chunkProcessor.createOrUpdateEmbeddingIndex("embeddings_qwen3-embedding")
+        await chunkProcessor.createOrUpdateEmbeddingIndex(chunkProcessor.bigIndex)
         return res.status(200).send();
     }
     catch (err) {
@@ -106,7 +108,7 @@ app.get("/createChunkIndex", async (req, res) => {
 
 app.get("/createMicroChunkIndex", async (req, res) => {
     try {
-        await chunkProcessor.createOrUpdateMicroChunkIndex("embeddings_qwen3-embedding_micro_new")
+        await chunkProcessor.createOrUpdateMicroChunkIndex(chunkProcessor.microIndex)
         return res.status(200).send();
     }
     catch (err) {
