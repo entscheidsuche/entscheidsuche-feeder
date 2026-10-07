@@ -35,6 +35,9 @@ export class ChunkProcessor {
 
     private noKeepAliveAgent : http.Agent;
 
+    // Chunk files are many small HTTPS downloads from the same host; reusing connections saves a TLS handshake each.
+    private chunkAgent : https.Agent;
+
     // Big chunks and micro chunks are embedded by different models, each served by its own vLLM instance.
     private bigEmbedder: EmbeddingClient;
     private microEmbedder: EmbeddingClient;
@@ -61,13 +64,14 @@ export class ChunkProcessor {
             rejectUnauthorized: false
         });
         this.noKeepAliveAgent = new http.Agent({keepAlive: false});
+        this.chunkAgent = new https.Agent({keepAlive: true, maxSockets: parseInt(`${process.env.CHUNK_FETCH_MAX_SOCKETS || 64}`)});
         this.bigEmbedder = new EmbeddingClient(`${process.env.EMBED_BIG_API_URL}`, `${process.env.EMBED_BIG_MODEL}`);
         this.microEmbedder = new EmbeddingClient(`${process.env.EMBED_MICRO_API_URL}`, `${process.env.EMBED_MICRO_MODEL}`);
         this.bigIndex = `${process.env.EMBED_BIG_INDEX}`;
         this.microIndex = `${process.env.EMBED_MICRO_INDEX}`;
         this.bigDims = parseInt(`${process.env.EMBED_BIG_DIMS || 4096}`);
         this.microDims = parseInt(`${process.env.EMBED_MICRO_DIMS || 1024}`);
-        this.fetchConcurrency = parseInt(`${process.env.CHUNK_FETCH_CONCURRENCY || 8}`);
+        this.fetchConcurrency = parseInt(`${process.env.CHUNK_FETCH_CONCURRENCY || 16}`);
     }
 
     async ensureIndices(): Promise<void> {
@@ -75,15 +79,32 @@ export class ChunkProcessor {
         await this.createOrUpdateMicroChunkIndex(this.microIndex);
     }
 
-    async process(documentId: string): Promise<void> {
-        await this.processChunks(await this.fetchChunkMetadata(documentId), documentId);
+    // Returns the time spent fetching the chunk metadata, in ms.
+    async process(documentId: string): Promise<number> {
+        const startTime = Date.now();
+        const chunksMeta = await this.fetchChunkMetadata(documentId);
+        const metaMs = Date.now() - startTime;
+        await this.processChunks(chunksMeta, documentId);
+        return metaMs;
     }
 
-    // Indexes big chunks and micro chunks of a document, fetching its chunk metadata only once.
-    async processDocument(documentId: string): Promise<void> {
+    // Indexes big chunks and micro chunks of a document, fetching its chunk metadata only once. Both passes
+    // run in parallel: they use different vLLM servers, and the micro chunk downloads overlap with the
+    // big chunk embedding. Returns the time spent fetching the chunk metadata, in ms.
+    async processDocument(documentId: string): Promise<number> {
+        const startTime = Date.now();
         const chunksMeta = await this.fetchChunkMetadata(documentId);
-        await this.processChunks(chunksMeta, documentId);
-        await this.processMicroChunks(chunksMeta, documentId);
+        const metaMs = Date.now() - startTime;
+        // Wait for both passes even if one fails, so no work for this document is still running afterwards.
+        const results = await Promise.all([
+            this.processChunks(chunksMeta, documentId).then(() => ({ok: true, error: undefined as any}), error => ({ok: false, error})),
+            this.processMicroChunks(chunksMeta, documentId).then(() => ({ok: true, error: undefined as any}), error => ({ok: false, error}))
+        ]);
+        const failed = results.find(result => !result.ok);
+        if (failed) {
+            throw failed.error;
+        }
+        return metaMs;
     }
 
     async processChunks(chunksMeta: any, documentId: string): Promise<void> {
@@ -214,13 +235,14 @@ export class ChunkProcessor {
         let responseData;
         const config: any = {
             timeout: 120000,
-            httpAgent: this.noKeepAliveAgent
+            httpAgent: this.noKeepAliveAgent,
+            httpsAgent: this.chunkAgent
         };
         if (asText) {
             config.responseType = 'text';
             config.transformResponse = [(data: any) => data];
         }
-        await Axios.get(url, config)
+        await this.withRetry(`fetching chunk ${url}`, () => Axios.get(url, config))
             .then((response) => {
                 responseData = response.data;
             })
@@ -441,7 +463,7 @@ export class ChunkProcessor {
         }
         const pageSize = parseInt(`${process.env.IMPORT_PAGE_SIZE || 20}`);
         const keepAlive = `${process.env.IMPORT_SCROLL_KEEPALIVE || '60m'}`;
-        const concurrency = parseInt(`${process.env.IMPORT_CONCURRENCY || 4}`);
+        const concurrency = parseInt(`${process.env.IMPORT_CONCURRENCY || 12}`);
         const status: ImportStatus = {
             running: true, copyDocument, indexMicroChunks, total: 0, count: 0, failed: 0, failedIds: [],
             startedAt: new Date().toISOString(), docsPerMin: 0, etaMin: 0
@@ -467,19 +489,64 @@ export class ChunkProcessor {
             status.total = response.hits.total.value;
             console.log(`${new Date().toISOString()} import started: ${status.total} documents ` +
                 `(copyDocument ${copyDocument}, indexMicroChunks ${indexMicroChunks}, concurrency ${concurrency})`);
-            while (response.hits.hits.length > 0) {
-                // Several documents in parallel, so vLLM can batch the embedding requests of all of them.
-                await this.mapWithConcurrency(response.hits.hits, (hit: any) => this.importHit(hit, copyDocument, indexMicroChunks, status), concurrency);
-                this.updateImportProgress(status, startTime);
-                response = await this.withRetry('import scroll', () => Axios.post(this.searchUrl + '_search/scroll', {
-                    scroll_id: scrollId,
-                    scroll: keepAlive
-                }, {
-                    maxContentLength: Infinity,
-                    maxBodyLength: Infinity,
-                    httpsAgent: this.agent
-                }).then(resp => resp.data));
-                scrollId = response._scroll_id;
+            // A pool of workers takes documents from a shared queue, so a slow document never holds up the
+            // others. The next scroll page is fetched in the background before the queue runs dry.
+            const queue: Array<any> = [...response.hits.hits];
+            let exhausted = queue.length === 0;
+            let pageError: any;
+            let pageFetch: Promise<void> | undefined;
+            const fetchNextPage = (): Promise<void> => {
+                if (pageFetch === undefined) {
+                    pageFetch = (async () => {
+                        try {
+                            this.updateImportProgress(status, startTime);
+                            const page = await this.withRetry('import scroll', () => Axios.post(this.searchUrl + '_search/scroll', {
+                                scroll_id: scrollId,
+                                scroll: keepAlive
+                            }, {
+                                maxContentLength: Infinity,
+                                maxBodyLength: Infinity,
+                                httpsAgent: this.agent
+                            }).then(resp => resp.data));
+                            scrollId = page._scroll_id;
+                            if (page.hits.hits.length === 0) {
+                                exhausted = true;
+                            } else {
+                                queue.push(...page.hits.hits);
+                            }
+                        } catch (error) {
+                            // Stop fetching; the workers finish the documents already queued.
+                            pageError = error;
+                            exhausted = true;
+                        } finally {
+                            pageFetch = undefined;
+                        }
+                    })();
+                }
+                return pageFetch;
+            };
+            const worker = async () => {
+                while (true) {
+                    if (!exhausted && queue.length < pageSize) {
+                        const fetching = fetchNextPage();
+                        if (queue.length === 0) {
+                            await fetching;
+                        }
+                    }
+                    const hit = queue.shift();
+                    if (hit === undefined) {
+                        if (exhausted) {
+                            return;
+                        }
+                        continue;
+                    }
+                    await this.importHit(hit, copyDocument, indexMicroChunks, status);
+                }
+            };
+            await Promise.all(Array.from({length: concurrency}, worker));
+            this.updateImportProgress(status, startTime);
+            if (pageError !== undefined) {
+                throw pageError;
             }
         } catch (error) {
             status.error = errorInfo(error);
@@ -501,10 +568,9 @@ export class ChunkProcessor {
         const docStart = Date.now();
         try {
             if (copyDocument) await this.processImportHits(hit)
-            if (indexMicroChunks) await this.processDocument(hit._id)
-            else await this.process(hit._id)
+            const metaMs = indexMicroChunks ? await this.processDocument(hit._id) : await this.process(hit._id);
             status.count++;
-            console.log(`import ${status.count}/${status.total}: ${hit._id} done in ${Date.now() - docStart} ms`);
+            console.log(`import ${status.count}/${status.total}: ${hit._id} done in ${Date.now() - docStart} ms (meta ${metaMs} ms)`);
         }
         catch (err) {
             status.count++;

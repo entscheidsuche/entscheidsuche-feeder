@@ -10,6 +10,13 @@
 # Both embedding servers share one GPU: the --gpu-memory-utilization values of
 # vllm-embed-big and vllm-embed-micro must add up to less than 1.0. Older vLLM
 # versions use --task embed instead of --runner pooling.
+#
+# --quantization fp8: the 8B model on big chunks is the bottleneck of the import
+# (GPU compute). FP8 quantizes the weights at load time (about 8 GB instead of 16)
+# and is about 1.5-2x faster on Ada/Hopper GPUs (L40S, RTX 4090/6000 Ada, H100),
+# which have FP8 hardware. On Ampere (A100, A6000, RTX 3090) it saves memory but
+# barely speeds things up. Switching it on or off changes the vectors slightly:
+# re-embed the big chunk index (delete it and re-import) rather than mixing both.
 
 [Unit]
 Description=vLLM embedding server (big chunks, Qwen/Qwen3-Embedding-8B)
@@ -23,6 +30,7 @@ WorkingDirectory=/home/piribauer
 ExecStart=/home/piribauer/vllm-venv/bin/vllm serve Qwen/Qwen3-Embedding-8B \
     --runner pooling \
     --served-model-name qwen3-embedding-8b \
+    --quantization fp8 \
     --host 127.0.0.1 --port 8001 \
     --gpu-memory-utilization 0.60 \
     --max-model-len 8192
