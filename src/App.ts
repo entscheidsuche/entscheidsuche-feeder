@@ -87,16 +87,23 @@ app.post("/indexMicroChunk", async (req, res) => {
 })
 
 
-app.post("/import", async (req, res) => {
-    try {
-        const params = req.body;
-        await chunkProcessor.importAll(params.copyDocument, params.indexMicroChunks)
-        return res.status(200).send();
+app.post("/import", (req, res) => {
+    if (chunkProcessor.isImportRunning()) {
+        return res.status(409).json({message: 'an import is already running', status: chunkProcessor.getImportStatus()});
     }
-    catch (err) {
-        console.log(`${new Date().toISOString()} error in processing import`);
-        return res.status(500).json(errorInfo(err));
+    const params = req.body ?? {};
+    // Runs for hours, so answer right away; progress is in the log and at GET /import/status.
+    chunkProcessor.importAll(!!params.copyDocument, !!params.indexMicroChunks)
+        .catch(err => console.log(`${new Date().toISOString()} error in processing import: ${JSON.stringify(errorInfo(err))}`));
+    return res.status(202).json({message: 'import started'});
+})
+
+app.get("/import/status", (req, res) => {
+    const status = chunkProcessor.getImportStatus();
+    if (status === undefined) {
+        return res.status(404).json({message: 'no import has run since the feeder started'});
     }
+    return res.status(200).json(status);
 })
 
 

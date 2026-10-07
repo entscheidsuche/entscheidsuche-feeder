@@ -6,6 +6,21 @@ import * as https from "https";
 import fs from "fs";
 import * as http from "http";
 
+export type ImportStatus = {
+    running: boolean,
+    copyDocument: boolean,
+    indexMicroChunks: boolean,
+    total: number,
+    count: number,
+    failed: number,
+    failedIds: Array<string>,
+    startedAt: string,
+    finishedAt?: string,
+    docsPerMin: number,
+    etaMin: number,
+    error?: any
+}
+
 export class ChunkProcessor {
 
     private chunkApiUrl: string;
@@ -30,6 +45,9 @@ export class ChunkProcessor {
     private readonly fetchConcurrency: number;
 
     private elasticUtil: ElasticUtil;
+
+    private importStatus?: ImportStatus;
+    private checkedImportIndices = new Set<string>();
 
     constructor() {
         this.chunkApiUrl = `${process.env.CHUNK_API_URL}`;
@@ -71,7 +89,10 @@ export class ChunkProcessor {
     async processChunks(chunksMeta: any, documentId: string): Promise<void> {
         try {
             const startTime = Date.now();
-            const chunks: Array<any> = chunksMeta.Chunks.map((chunk: any) => ({...chunk, id: ChunkProcessor.normalizeId(chunk.id)}));
+            if (!chunksMeta?.Chunks) {
+                console.log(`${documentId}: no chunks`);
+            }
+            const chunks: Array<any> = (chunksMeta?.Chunks ?? []).map((chunk: any) => ({...chunk, id: ChunkProcessor.normalizeId(chunk.id)}));
             const existing = await this.elasticUtil.existingIds(this.bigIndex, chunks.map(chunk => chunk.id));
             const missing = chunks.filter(chunk => !existing.has(chunk.id));
             if (missing.length === 0) {
@@ -117,12 +138,12 @@ export class ChunkProcessor {
         try {
             const startTime = Date.now();
             const microChunks: Array<{meta: any, id: string, chunkId: string}> = [];
-            for (const chunk of chunksMeta.Chunks) {
+            for (const chunk of chunksMeta?.Chunks ?? []) {
                 const normalizedChunkId = ChunkProcessor.normalizeId(chunk.id);
                 if (chunkId && chunkId !== normalizedChunkId) {
                     continue;
                 }
-                for (const microChunk of chunk.MicroChunks) {
+                for (const microChunk of chunk.MicroChunks ?? []) {
                     microChunks.push({meta: microChunk, id: ChunkProcessor.normalizeId(microChunk.id), chunkId: normalizedChunkId});
                 }
             }
@@ -155,8 +176,8 @@ export class ChunkProcessor {
         return id.replaceAll("/", "_");
     }
 
-    // Like Promise.all over items.map(fn), but with at most fetchConcurrency calls in flight.
-    private async mapWithConcurrency<T, R>(items: Array<T>, fn: (item: T) => Promise<R>): Promise<Array<R>> {
+    // Like Promise.all over items.map(fn), but with at most limit (default fetchConcurrency) calls in flight.
+    private async mapWithConcurrency<T, R>(items: Array<T>, fn: (item: T) => Promise<R>, limit: number = this.fetchConcurrency): Promise<Array<R>> {
         const results: Array<R> = new Array(items.length);
         let next = 0;
         const worker = async () => {
@@ -165,7 +186,7 @@ export class ChunkProcessor {
                 results[i] = await fn(items[i]);
             }
         };
-        await Promise.all(Array.from({length: Math.min(this.fetchConcurrency, items.length)}, worker));
+        await Promise.all(Array.from({length: Math.min(limit, items.length)}, worker));
         return results;
     }
 
@@ -326,12 +347,14 @@ export class ChunkProcessor {
     }
 
 
-    convertDateString(value: string): Date {
-        const dateVals = value.split(' ')[0].split('.').map(val => parseInt(val, 10));
-        const timeVals = value.split(' ')[1].split(':').map(val => parseInt(val, 10));
-
-        return new Date(dateVals[2], dateVals[1], dateVals[0], timeVals[0], timeVals[1], timeVals[2]);
-
+    // Parses "dd.mm.yyyy hh:mm:ss" (UTC) as delivered in the chunk's "Zeit UTC" field.
+    convertDateString(value?: string): Date | undefined {
+        const match = /^(\d{1,2})\.(\d{1,2})\.(\d{4}) (\d{1,2}):(\d{2}):(\d{2})/.exec(value ?? '');
+        if (!match) {
+            return undefined;
+        }
+        const [day, month, year, hours, minutes, seconds] = match.slice(1).map(val => parseInt(val, 10));
+        return new Date(Date.UTC(year, month - 1, day, hours, minutes, seconds));
     }
 
     toBigDoc(embedding: Array<number>, documentId: string, chunkData: any): any {
@@ -381,89 +404,138 @@ export class ChunkProcessor {
         };
     }
 
-    public async importAll(copyDocument: boolean, indexMicroChunks: boolean): Promise<any> {
-        let scrollSearch = {
-            "query": {
-                "query_string": {
-                    "query": "*"
-                }
-            },
-            "size": 50,
-            "sort": [],
-            // Without this, hits.total is capped at 10000 and the progress total is wrong.
-            "track_total_hits": true
-        }
+    isImportRunning(): boolean {
+        return this.importStatus?.running ?? false;
+    }
 
-        let response = await Axios.post(this.searchUrl + 'entscheidsuche.v2*/_search?scroll=30m', scrollSearch, {
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity,
-            httpsAgent: this.agent
-        }).then(resp => {
-            return resp.data;
-        });
-        let scrollId = response._scroll_id
-        const totalCount = response.hits.total.value
-        let count = 0;
-        let failed = 0;
+    getImportStatus(): ImportStatus | undefined {
+        if (this.importStatus === undefined) {
+            return undefined;
+        }
+        return {...this.importStatus, failedIds: this.importStatus.failedIds.slice(0, 100)};
+    }
+
+    public async importAll(copyDocument: boolean, indexMicroChunks: boolean): Promise<void> {
+        if (this.isImportRunning()) {
+            throw new Error('an import is already running');
+        }
+        const pageSize = parseInt(`${process.env.IMPORT_PAGE_SIZE || 20}`);
+        const keepAlive = `${process.env.IMPORT_SCROLL_KEEPALIVE || '60m'}`;
+        const concurrency = parseInt(`${process.env.IMPORT_CONCURRENCY || 4}`);
+        const status: ImportStatus = {
+            running: true, copyDocument, indexMicroChunks, total: 0, count: 0, failed: 0, failedIds: [],
+            startedAt: new Date().toISOString(), docsPerMin: 0, etaMin: 0
+        };
+        this.importStatus = status;
         const startTime = Date.now();
-        console.log(`${new Date().toISOString()} import started: ${totalCount} documents ` +
-            `(copyDocument ${copyDocument}, indexMicroChunks ${indexMicroChunks})`);
-        while(response.hits.hits.length > 0) {
-            try{
-                for (const hit of response.hits.hits) {
-                    const docStart = Date.now();
-                    try {
-                        if (copyDocument) await this.processImportHits(hit)
-                        if (indexMicroChunks) await this.processDocument(hit._id)
-                        else await this.process(hit._id)
-                        console.log(`import ${count + 1}/${totalCount}: ${hit._id} done in ${Date.now() - docStart} ms`);
-                    }
-                    catch(err) {
-                        failed++;
-                        console.error(`import ${count + 1}/${totalCount}: ${hit._id} failed after ${Date.now() - docStart} ms:`, err)
-                    }
-                    count++;
-                }
-                this.logImportProgress(count, totalCount, failed, startTime);
-                if (count>totalCount) break;
-                response = await Axios.post(this.searchUrl + '_search/scroll', {
-                    scroll_id: scrollId,
-                    scroll: "30m"
+        let scrollId: string | undefined;
+        try {
+            let response = await this.withRetry('import search', () => Axios.post(
+                this.searchUrl + `entscheidsuche.v2*/_search?scroll=${keepAlive}`, {
+                    query: {match_all: {}},
+                    size: pageSize,
+                    // _doc is the cheapest order for scrolling.
+                    sort: ["_doc"],
+                    // Without this, hits.total is capped at 10000 and the progress total is wrong.
+                    track_total_hits: true
                 }, {
                     maxContentLength: Infinity,
                     maxBodyLength: Infinity,
                     httpsAgent: this.agent
-                    }
-                ).then(resp => {
-                    return resp.data;
-                })
-                scrollId = response._scroll_id
+                }).then(resp => resp.data));
+            scrollId = response._scroll_id;
+            status.total = response.hits.total.value;
+            console.log(`${new Date().toISOString()} import started: ${status.total} documents ` +
+                `(copyDocument ${copyDocument}, indexMicroChunks ${indexMicroChunks}, concurrency ${concurrency})`);
+            while (response.hits.hits.length > 0) {
+                // Several documents in parallel, so vLLM can batch the embedding requests of all of them.
+                await this.mapWithConcurrency(response.hits.hits, (hit: any) => this.importHit(hit, copyDocument, indexMicroChunks, status), concurrency);
+                this.updateImportProgress(status, startTime);
+                response = await this.withRetry('import scroll', () => Axios.post(this.searchUrl + '_search/scroll', {
+                    scroll_id: scrollId,
+                    scroll: keepAlive
+                }, {
+                    maxContentLength: Infinity,
+                    maxBodyLength: Infinity,
+                    httpsAgent: this.agent
+                }).then(resp => resp.data));
+                scrollId = response._scroll_id;
             }
-            catch(error) {
-                console.error(`import aborted after ${count}/${totalCount} documents:`, error);
-                break
+        } catch (error) {
+            status.error = errorInfo(error);
+            console.error(`import aborted after ${status.count}/${status.total} documents: ${JSON.stringify(status.error)}`);
+        } finally {
+            status.running = false;
+            status.finishedAt = new Date().toISOString();
+            if (scrollId !== undefined) {
+                await this.clearScroll(scrollId);
             }
-
+            const elapsedMin = ((Date.now() - startTime) / 60000).toFixed(1);
+            const failedList = status.failedIds.slice(0, 100).join(', ') + (status.failedIds.length > 100 ? ', ...' : '');
+            console.log(`${new Date().toISOString()} import finished: ${status.count}/${status.total} documents processed, ` +
+                `${status.failed} failed, ${elapsedMin} min` + (status.failed > 0 ? `. Failed: ${failedList}` : ''));
         }
-        const elapsedMin = ((Date.now() - startTime) / 60000).toFixed(1);
-        console.log(`${new Date().toISOString()} import finished: ${count}/${totalCount} documents processed, ` +
-            `${failed} failed, ${elapsedMin} min`);
     }
 
-    private logImportProgress(count: number, totalCount: number, failed: number, startTime: number): void {
+    private async importHit(hit: any, copyDocument: boolean, indexMicroChunks: boolean, status: ImportStatus): Promise<void> {
+        const docStart = Date.now();
+        try {
+            if (copyDocument) await this.processImportHits(hit)
+            if (indexMicroChunks) await this.processDocument(hit._id)
+            else await this.process(hit._id)
+            status.count++;
+            console.log(`import ${status.count}/${status.total}: ${hit._id} done in ${Date.now() - docStart} ms`);
+        }
+        catch (err) {
+            status.count++;
+            status.failed++;
+            status.failedIds.push(hit._id);
+            console.error(`import ${status.count}/${status.total}: ${hit._id} failed after ${Date.now() - docStart} ms: ${JSON.stringify(errorInfo(err))}`);
+        }
+    }
+
+    private updateImportProgress(status: ImportStatus, startTime: number): void {
         const elapsedMs = Date.now() - startTime;
-        const docsPerMin = count / (elapsedMs / 60000);
-        const remainingMin = docsPerMin > 0 ? (totalCount - count) / docsPerMin : 0;
-        const percent = totalCount > 0 ? (100 * count / totalCount).toFixed(1) : '100.0';
-        console.log(`${new Date().toISOString()} import progress: ${count}/${totalCount} (${percent}%), ` +
-            `${failed} failed, ${docsPerMin.toFixed(1)} docs/min, ` +
-            `elapsed ${(elapsedMs / 60000).toFixed(1)} min, ETA ${remainingMin.toFixed(1)} min`);
+        status.docsPerMin = status.count / (elapsedMs / 60000);
+        status.etaMin = status.docsPerMin > 0 ? (status.total - status.count) / status.docsPerMin : 0;
+        const percent = status.total > 0 ? (100 * status.count / status.total).toFixed(1) : '100.0';
+        console.log(`${new Date().toISOString()} import progress: ${status.count}/${status.total} (${percent}%), ` +
+            `${status.failed} failed, ${status.docsPerMin.toFixed(1)} docs/min, ` +
+            `elapsed ${(elapsedMs / 60000).toFixed(1)} min, ETA ${status.etaMin.toFixed(1)} min`);
+    }
+
+    // Retries transient failures (connection errors, 5xx) so a single hiccup does not end a long import.
+    private async withRetry<T>(what: string, fn: () => Promise<T>, maxRetries: number = 3): Promise<T> {
+        for (let attempt = 0; ; attempt++) {
+            try {
+                return await fn();
+            } catch (err: any) {
+                const status = err.response?.status;
+                const retryable = status === undefined || status >= 500;
+                if (!retryable || attempt >= maxRetries) {
+                    throw err;
+                }
+                const delayMs = 2000 * Math.pow(2, attempt);
+                console.log(`${what} failed (${err.message}), retrying in ${delayMs} ms`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+        }
+    }
+
+    private async clearScroll(scrollId: string): Promise<void> {
+        await Axios.delete(this.searchUrl + '_search/scroll', {
+            data: {scroll_id: scrollId},
+            httpsAgent: this.agent
+        }).catch(err => console.log(`failed to clear import scroll: ${err.message}`));
     }
 
     //Importing data to Test-ElasticSearch
     private async processImportHits(hit: any){
-        if (!await this.elasticUtil.existsIndex(hit._index)){
-            await this.createDocIndex(hit._index);
+        if (!this.checkedImportIndices.has(hit._index)) {
+            if (!await this.elasticUtil.existsIndex(hit._index)){
+                await this.createDocIndex(hit._index);
+            }
+            this.checkedImportIndices.add(hit._index);
         }
         const resp = await Axios.put(
             `${this.elasticsearchHost}/${hit._index}/_doc/${hit._id}`,
