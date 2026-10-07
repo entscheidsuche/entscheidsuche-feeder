@@ -11,6 +11,11 @@
 # vllm-embed-big and vllm-embed-micro must add up to less than 1.0. Older vLLM
 # versions use --task embed instead of --runner pooling.
 #
+# --scheduling-policy priority: the import keeps the server busy with long
+# batches. Requests with a lower "priority" value are handled first, so the
+# feeder sends its requests with EMBED_PRIORITY (e.g. 10), and search queries
+# from the frontend (default 0) skip ahead of them instead of waiting seconds.
+#
 # --quantization fp8_per_tensor (formerly "fp8"): the 8B model on big chunks is the bottleneck of the import
 # (GPU compute). FP8 quantizes the weights at load time (about 8 GB instead of 16)
 # and is about 1.5-2x faster on Ada/Hopper GPUs (L40S, RTX 4090/6000 Ada, H100),
@@ -29,6 +34,7 @@ User=piribauer
 WorkingDirectory=/home/piribauer
 ExecStart=/home/piribauer/vllm-venv/bin/vllm serve Qwen/Qwen3-Embedding-8B \
     --runner pooling \
+    --scheduling-policy priority \
     --served-model-name qwen3-embedding-8b \
     --quantization fp8_per_tensor \
     --host 127.0.0.1 --port 8001 \

@@ -10,6 +10,11 @@
 # Both embedding servers share one GPU: the --gpu-memory-utilization values of
 # vllm-embed-big and vllm-embed-micro must add up to less than 1.0. Older vLLM
 # versions use --task embed instead of --runner pooling.
+#
+# --scheduling-policy priority: the import keeps the server busy with long
+# batches. Requests with a lower "priority" value are handled first, so the
+# feeder sends its requests with EMBED_PRIORITY (e.g. 10), and search queries
+# from the frontend (default 0) skip ahead of them instead of waiting seconds.
 
 [Unit]
 Description=vLLM embedding server (micro chunks, Qwen/Qwen3-Embedding-0.6B)
@@ -22,6 +27,7 @@ User=piribauer
 WorkingDirectory=/home/piribauer
 ExecStart=/home/piribauer/vllm-venv/bin/vllm serve Qwen/Qwen3-Embedding-0.6B \
     --runner pooling \
+    --scheduling-policy priority \
     --served-model-name qwen3-embedding-0.6b \
     --host 127.0.0.1 --port 8002 \
     --gpu-memory-utilization 0.25 \

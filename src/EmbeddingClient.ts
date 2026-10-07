@@ -9,12 +9,16 @@ export class EmbeddingClient {
     private readonly model: string;
     private readonly batchSize: number;
     private readonly maxRetries: number;
+    private readonly priority: number;
 
     constructor(apiUrl: string, model: string) {
         this.apiUrl = apiUrl;
         this.model = model;
         this.batchSize = parseInt(`${process.env.EMBED_BATCH_SIZE || 32}`);
         this.maxRetries = parseInt(`${process.env.EMBED_MAX_RETRIES || 3}`);
+        // Higher value = handled later. Lets search queries (priority 0) skip ahead of indexing batches.
+        // Only takes effect if vLLM runs with --scheduling-policy priority; otherwise it must stay 0.
+        this.priority = parseInt(`${process.env.EMBED_PRIORITY || 0}`);
     }
 
     async embed(texts: Array<string>): Promise<Array<Array<number>>> {
@@ -32,7 +36,10 @@ export class EmbeddingClient {
     }
 
     private async embedBatch(batch: Array<string>): Promise<Array<Array<number>>> {
-        const body = {input: batch, model: this.model, encoding_format: "float"};
+        const body: any = {input: batch, model: this.model, encoding_format: "float"};
+        if (this.priority !== 0) {
+            body.priority = this.priority;
+        }
         for (let attempt = 0; ; attempt++) {
             try {
                 const resp = await Axios.post(this.apiUrl + '/v1/embeddings', body, {
