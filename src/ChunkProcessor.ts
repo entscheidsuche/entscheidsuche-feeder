@@ -1,6 +1,7 @@
 import Axios from "axios";
 import {ElasticUtil} from "./ElasticUtil";
 import {EmbeddingClient} from "./EmbeddingClient";
+import {errorInfo} from "./ErrorUtil";
 import * as https from "https";
 import fs from "fs";
 import * as http from "http";
@@ -91,7 +92,7 @@ export class ChunkProcessor {
                 `embed ${endTimeEmbed - endTimeFetch} ms, index ${Date.now() - endTimeEmbed} ms`);
         }
         catch (error) {
-            console.error(error);
+            console.error(JSON.stringify(errorInfo(error)));
             throw error;
         }
     }
@@ -105,7 +106,7 @@ export class ChunkProcessor {
             await this.processMicroChunks(chunksMeta, documentId, chunkId)
         }
         catch (error) {
-            console.error(error);
+            console.error(JSON.stringify(errorInfo(error)));
             throw error;
         }
     }
@@ -145,7 +146,7 @@ export class ChunkProcessor {
                 `embed ${endTimeEmbed - endTimeFetch} ms, index ${Date.now() - endTimeEmbed} ms`);
         }
         catch (error) {
-            console.error(error);
+            console.error(JSON.stringify(errorInfo(error)));
             throw error;
         }
     }
@@ -179,8 +180,9 @@ export class ChunkProcessor {
         }).then((response) => {
             responseData = response.data;
         }).catch((error) => {
-            console.log(error);
-            throw(error);
+            const info = errorInfo(error);
+            console.log(`failed to fetch chunk metadata for ${dokid}: ${JSON.stringify(info)}`);
+            throw info;
         });
         return responseData;
     }
@@ -195,8 +197,9 @@ export class ChunkProcessor {
                 responseData = response.data;
             })
             .catch((error) => {
-                console.log(error);
-                throw(error);
+                const info = errorInfo(error);
+                console.log(`failed to fetch chunk ${url}: ${JSON.stringify(info)}`);
+                throw info;
             });
         return responseData;
 
@@ -275,7 +278,7 @@ export class ChunkProcessor {
             }
         }
         catch (error) {
-            console.error(error);
+            console.error(JSON.stringify(errorInfo(error)));
         }
 
     }
@@ -318,7 +321,7 @@ export class ChunkProcessor {
             }
         }
         catch (error) {
-            console.error(error);
+            console.error(JSON.stringify(errorInfo(error)));
         }
     }
 

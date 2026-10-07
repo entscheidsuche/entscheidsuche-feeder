@@ -1,4 +1,5 @@
 import Axios from "axios";
+import {errorInfo} from "./ErrorUtil";
 
 // Client for an OpenAI-compatible /v1/embeddings endpoint (vLLM). Sends texts in batches so the
 // server can embed many inputs per forward pass instead of one request per chunk.
@@ -44,8 +45,9 @@ export class EmbeddingClient {
                 const status = err.response?.status;
                 const retryable = status === undefined || status >= 500;
                 if (!retryable || attempt >= this.maxRetries) {
-                    console.log(`embedding request to ${this.model} failed: ${err.message}`);
-                    throw err;
+                    const info = errorInfo(err);
+                    console.log(`embedding request to ${this.model} failed: ${JSON.stringify(info)}`);
+                    throw info;
                 }
                 const delayMs = 1000 * Math.pow(2, attempt);
                 console.log(`embedding request to ${this.model} failed (${err.message}), retrying in ${delayMs} ms`);

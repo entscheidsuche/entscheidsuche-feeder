@@ -2,7 +2,7 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import { SpiderUpdate } from "./Model";
 import { SpiderProcessor } from "./SpiderProcessor";
-import { serializeError } from "serialize-error";
+import { errorInfo } from "./ErrorUtil";
 import {ChunkProcessor} from "./ChunkProcessor";
 import {ChunkQueue} from "./ChunkQueue";
 import {ChunkQueueProcessor} from "./ChunkQueueProcessor";
@@ -39,14 +39,17 @@ app.post("/", async (req, res) => {
     await reportingUtil.reportStatus(spiderUpdate);
     return res.status(201).send();
   } catch (err) {
-    console.log(`${new Date().toISOString()} error in processing spider ${spiderUpdate.spider} with timestamp ${spiderUpdate.time}: ${JSON.stringify(serializeError(err))}`);
+    console.log(`${new Date().toISOString()} error in processing spider ${spiderUpdate.spider} with timestamp ${spiderUpdate.time}: ${JSON.stringify(errorInfo(err))}`);
     await reportingUtil.reportStatus(spiderUpdate, err);
-    return res.status(500).json(serializeError(err));
+    return res.status(500).json(errorInfo(err));
   }
 });
 
 app.post("/chunk", async (req, res) => {
     const dokId = req.body;
+    if (!dokId || typeof dokId.id !== 'string' || dokId.id === '') {
+        return res.status(400).json({message: 'expected a JSON body {"id": "<document id>"} with Content-Type: application/json'});
+    }
     console.log(`${new Date().toISOString()} processing chunks for document ${dokId.id}`);
     try {
         await chunkProcessor.process(dokId.id);
@@ -54,8 +57,8 @@ app.post("/chunk", async (req, res) => {
         return res.status(200).send();
     }
     catch (err) {
-        console.log(`${new Date().toISOString()} error in processing chunks for ${dokId.id}`);
-        return res.status(500).json(serializeError(err));
+        console.log(`${new Date().toISOString()} error in processing chunks for ${dokId.id}: ${JSON.stringify(errorInfo(err))}`);
+        return res.status(500).json(errorInfo(err));
     }
 
 })
@@ -63,6 +66,9 @@ app.post("/chunk", async (req, res) => {
 
 app.post("/indexMicroChunk", async (req, res) => {
     const reqBody = req.body;
+    if (!reqBody || typeof reqBody.id !== 'string' || reqBody.id === '') {
+        return res.status(400).json({message: 'expected a JSON body {"id": "<document id>", "chunkId"?: "<chunk id>"} with Content-Type: application/json'});
+    }
     console.log(`${new Date().toISOString()} processing microchunks for document ${reqBody.id}`);
     try {
         if(reqBody.chunkId) {
@@ -75,8 +81,8 @@ app.post("/indexMicroChunk", async (req, res) => {
         return res.status(200).send();
     }
     catch (err) {
-        console.log(`${new Date().toISOString()} error in processing microchunks for ${reqBody.id}`);
-        return res.status(500).json(serializeError(err));
+        console.log(`${new Date().toISOString()} error in processing microchunks for ${reqBody.id}: ${JSON.stringify(errorInfo(err))}`);
+        return res.status(500).json(errorInfo(err));
     }
 })
 
@@ -89,7 +95,7 @@ app.post("/import", async (req, res) => {
     }
     catch (err) {
         console.log(`${new Date().toISOString()} error in processing import`);
-        return res.status(500).json(serializeError(err));
+        return res.status(500).json(errorInfo(err));
     }
 })
 
@@ -101,7 +107,7 @@ app.get("/createChunkIndex", async (req, res) => {
     }
     catch (err) {
         console.log(`${new Date().toISOString()} error in processing import`);
-        return res.status(500).json(serializeError(err));
+        return res.status(500).json(errorInfo(err));
     }
 })
 
@@ -113,7 +119,7 @@ app.get("/createMicroChunkIndex", async (req, res) => {
     }
     catch (err) {
         console.log(`${new Date().toISOString()} error in processing import`);
-        return res.status(500).json(serializeError(err));
+        return res.status(500).json(errorInfo(err));
     }
 })
 
