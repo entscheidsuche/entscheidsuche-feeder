@@ -354,6 +354,19 @@ export class ChunkProcessor {
     }
 
 
+    // The chunk API uses "0000-00-00" (or partial dates like "2015-00-00") for unknown dates, which
+    // Elasticsearch rejects. Those are left out, as DocumentBuilder does for the main documents.
+    static validDate(value?: string): string | undefined {
+        const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value ?? '');
+        if (!match) {
+            return undefined;
+        }
+        const [year, month, day] = match.slice(1).map(val => parseInt(val, 10));
+        const date = new Date(Date.UTC(year, month - 1, day));
+        const valid = year > 0 && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+        return valid ? value : undefined;
+    }
+
     // Parses "dd.mm.yyyy hh:mm:ss" (UTC) as delivered in the chunk's "Zeit UTC" field.
     convertDateString(value?: string): Date | undefined {
         const match = /^(\d{1,2})\.(\d{1,2})\.(\d{4}) (\d{1,2}):(\d{2}):(\d{2})/.exec(value ?? '');
@@ -372,7 +385,7 @@ export class ChunkProcessor {
             scrapyJob: chunkData['ScrapyJob'],
             timeStamp: this.convertDateString(chunkData['Zeit UTC']),
             language: chunkData['Sprache'],
-            date: chunkData['Datum'],
+            date: ChunkProcessor.validDate(chunkData['Datum']),
             spider: chunkData['Spider'],
             signature: chunkData['Signatur'],
             pdf: chunkData['PDF'],
@@ -382,7 +395,7 @@ export class ChunkProcessor {
             metadata: chunkData['Meta'],
             abstract: chunkData['Abstract'],
             checkSum: chunkData['Checksum'],
-            scrape: chunkData['Scrapedate'],
+            scrape: ChunkProcessor.validDate(chunkData['Scrapedate']),
             hierarchy: this.buildHierarchy(chunkData['Signatur']),
         };
     }
