@@ -18,6 +18,11 @@ export class EmbeddingClient {
     }
 
     async embed(texts: Array<string>): Promise<Array<Array<number>>> {
+        // vLLM rejects the whole batch if one input is not a string, with a confusing validation error.
+        const invalid = texts.findIndex(text => typeof text !== 'string');
+        if (invalid !== -1) {
+            throw new Error(`embedding input ${invalid} is a ${typeof texts[invalid]}, not a string: ${JSON.stringify(texts[invalid])}`.slice(0, 300));
+        }
         const embeddings: Array<Array<number>> = [];
         for (let start = 0; start < texts.length; start += this.batchSize) {
             const batch = texts.slice(start, start + this.batchSize);

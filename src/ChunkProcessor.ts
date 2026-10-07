@@ -152,7 +152,7 @@ export class ChunkProcessor {
             if (missing.length === 0) {
                 return;
             }
-            const texts = await this.mapWithConcurrency(missing, microChunk => this.fetchChunk(microChunk.meta.url));
+            const texts = await this.mapWithConcurrency(missing, microChunk => this.fetchChunk(microChunk.meta.url, true));
             const toEmbed = missing
                 .map((microChunk, i) => ({microChunk, chunkText: texts[i]}))
                 .filter(entry => entry.chunkText);
@@ -208,12 +208,19 @@ export class ChunkProcessor {
         return responseData;
     }
 
-    async fetchChunk(url: string): Promise<any> {
+    // Big chunks are JSON; micro chunks are plain text and must be fetched as text. Axios otherwise
+    // JSON-parses any response that looks like JSON, e.g. a micro chunk " 8\n" (a page number) becomes the number 8.
+    async fetchChunk(url: string, asText: boolean = false): Promise<any> {
         let responseData;
-        await Axios.get(url, {
+        const config: any = {
             timeout: 120000,
             httpAgent: this.noKeepAliveAgent
-        })
+        };
+        if (asText) {
+            config.responseType = 'text';
+            config.transformResponse = [(data: any) => data];
+        }
+        await Axios.get(url, config)
             .then((response) => {
                 responseData = response.data;
             })
