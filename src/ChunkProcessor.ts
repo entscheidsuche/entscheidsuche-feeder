@@ -13,12 +13,17 @@ export type ImportStatus = {
     total: number,
     count: number,
     failed: number,
-    failedIds: Array<string>,
+    failures: Array<ImportFailure>,
     startedAt: string,
     finishedAt?: string,
     docsPerMin: number,
     etaMin: number,
     error?: any
+}
+
+export type ImportFailure = {
+    id: string,
+    reason: string
 }
 
 export class ChunkProcessor {
@@ -50,6 +55,7 @@ export class ChunkProcessor {
     private elasticUtil: ElasticUtil;
 
     private importStatus?: ImportStatus;
+    private readonly importFailedLog = `${process.env.IMPORT_FAILED_LOG || 'import-failed.jsonl'}`;
     private checkedImportIndices = new Set<string>();
 
     constructor() {
@@ -450,11 +456,69 @@ export class ChunkProcessor {
         return this.importStatus?.running ?? false;
     }
 
-    getImportStatus(): ImportStatus | undefined {
+    // Status with a summary of the failures; the full list is at getImportFailures() (GET /import/failed).
+    getImportStatus(): any {
         if (this.importStatus === undefined) {
             return undefined;
         }
-        return {...this.importStatus, failedIds: this.importStatus.failedIds.slice(0, 100)};
+        const {failures, ...status} = this.importStatus;
+        return {
+            ...status,
+            failuresByReason: ChunkProcessor.countBy(failures, failure => ChunkProcessor.reasonGroup(failure.reason), 20),
+            failuresBySpider: ChunkProcessor.countBy(failures, failure => failure.id.split('_').slice(0, 2).join('_')),
+            failedIdsSample: failures.slice(0, 20).map(failure => failure.id),
+            failedList: 'GET /import/failed (all failures with reasons), GET /import/failed?format=ids (ids only)',
+            failedLog: this.importFailedLog
+        };
+    }
+
+    getImportFailures(): Array<ImportFailure> | undefined {
+        return this.importStatus?.failures;
+    }
+
+    // Short, readable reason for a failed document, from the error the import caught.
+    private static failureReason(err: any): string {
+        const info = errorInfo(err);
+        const detail = info.response?.detail ?? info.response?.error?.reason ?? info.response?.error?.message
+            ?? info.failed?.[0]?.error?.reason ?? info.message ?? JSON.stringify(info);
+        const text = typeof detail === 'string' ? detail : JSON.stringify(detail);
+        return ((info.status ? `${info.status}: ` : '') + text).slice(0, 300);
+    }
+
+    // Reasons with document-specific parts (paths, URLs, ids, positions) removed, so equal causes group together.
+    private static reasonGroup(reason: string): string {
+        return reason
+            .replace(/(https?:\/\/|\/)[^\s"',)]+/g, '<path>')
+            .replace(/id '[^']*'/g, "id <id>")
+            .replace(/\[\d+:\d+\]\s*/g, '');
+    }
+
+    // Counts of items per key, most frequent first (optionally only the top n).
+    private static countBy<T>(items: Array<T>, key: (item: T) => string, top?: number): {[key: string]: number} {
+        const counts = new Map<string, number>();
+        for (const item of items) {
+            const k = key(item);
+            counts.set(k, (counts.get(k) ?? 0) + 1);
+        }
+        const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+        const result: {[key: string]: number} = {};
+        for (const [k, count] of top === undefined ? sorted : sorted.slice(0, top)) {
+            result[k] = count;
+        }
+        return result;
+    }
+
+    // Moves the failure log of a previous import aside, so each import starts with an empty one.
+    private async rotateImportFailedLog(): Promise<void> {
+        try {
+            const stat = await fs.promises.stat(this.importFailedLog);
+            const stamp = stat.mtime.toISOString().replace(/[:.]/g, '-');
+            await fs.promises.rename(this.importFailedLog, this.importFailedLog.replace(/\.jsonl$/, '') + `.${stamp}.jsonl`);
+        } catch (err: any) {
+            if (err.code !== 'ENOENT') {
+                console.log(`could not rotate ${this.importFailedLog}: ${err.message}`);
+            }
+        }
     }
 
     public async importAll(copyDocument: boolean, indexMicroChunks: boolean): Promise<void> {
@@ -465,10 +529,11 @@ export class ChunkProcessor {
         const keepAlive = `${process.env.IMPORT_SCROLL_KEEPALIVE || '60m'}`;
         const concurrency = parseInt(`${process.env.IMPORT_CONCURRENCY || 12}`);
         const status: ImportStatus = {
-            running: true, copyDocument, indexMicroChunks, total: 0, count: 0, failed: 0, failedIds: [],
+            running: true, copyDocument, indexMicroChunks, total: 0, count: 0, failed: 0, failures: [],
             startedAt: new Date().toISOString(), docsPerMin: 0, etaMin: 0
         };
         this.importStatus = status;
+        await this.rotateImportFailedLog();
         const startTime = Date.now();
         let scrollId: string | undefined;
         try {
@@ -558,9 +623,11 @@ export class ChunkProcessor {
                 await this.clearScroll(scrollId);
             }
             const elapsedMin = ((Date.now() - startTime) / 60000).toFixed(1);
-            const failedList = status.failedIds.slice(0, 100).join(', ') + (status.failedIds.length > 100 ? ', ...' : '');
+            const topReasons = Object.entries(ChunkProcessor.countBy(status.failures, failure => ChunkProcessor.reasonGroup(failure.reason), 5))
+                .map(([reason, count]) => `${count}x ${reason}`).join('; ');
             console.log(`${new Date().toISOString()} import finished: ${status.count}/${status.total} documents processed, ` +
-                `${status.failed} failed, ${elapsedMin} min` + (status.failed > 0 ? `. Failed: ${failedList}` : ''));
+                `${status.failed} failed, ${elapsedMin} min` +
+                (status.failed > 0 ? `. Most frequent reasons: ${topReasons}. All failures: ${this.importFailedLog}` : ''));
         }
     }
 
@@ -575,8 +642,12 @@ export class ChunkProcessor {
         catch (err) {
             status.count++;
             status.failed++;
-            status.failedIds.push(hit._id);
+            const failure: ImportFailure = {id: hit._id, reason: ChunkProcessor.failureReason(err)};
+            status.failures.push(failure);
             console.error(`import ${status.count}/${status.total}: ${hit._id} failed after ${Date.now() - docStart} ms: ${JSON.stringify(errorInfo(err))}`);
+            // Kept on disk too, so the list survives a restart of the feeder.
+            await fs.promises.appendFile(this.importFailedLog, JSON.stringify(failure) + '\n')
+                .catch(appendErr => console.log(`could not write to ${this.importFailedLog}: ${appendErr.message}`));
         }
     }
 

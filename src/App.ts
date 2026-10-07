@@ -98,6 +98,18 @@ app.post("/import", (req, res) => {
     return res.status(202).json({message: 'import started'});
 })
 
+// All failed documents of the current/last import with their reasons, or only the ids (?format=ids).
+app.get("/import/failed", (req, res) => {
+    const failures = chunkProcessor.getImportFailures();
+    if (failures === undefined) {
+        return res.status(404).json({message: 'no import has run since the feeder started'});
+    }
+    if (req.query.format === 'ids') {
+        return res.status(200).type('text/plain').send(failures.map(failure => failure.id).join('\n') + '\n');
+    }
+    return res.status(200).json(failures);
+})
+
 app.get("/import/status", (req, res) => {
     const status = chunkProcessor.getImportStatus();
     if (status === undefined) {
