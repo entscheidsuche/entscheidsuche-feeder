@@ -219,13 +219,13 @@ export class ChunkProcessor {
 
     async fetchChunkMetadata(dokid: string): Promise<any> {
         let responseData;
-        await Axios.get(this.chunkApiUrl, {
+        await this.withRetry(`fetching chunk metadata for ${dokid}`, () => Axios.get(this.chunkApiUrl, {
             params: {
                dokid
             },
             timeout: 120000,
             httpAgent: this.noKeepAliveAgent
-        }).then((response) => {
+        }), 3, ChunkProcessor.isTransientChunkApiError).then((response) => {
             responseData = response.data;
         }).catch((error) => {
             const info = errorInfo(error);
@@ -662,14 +662,13 @@ export class ChunkProcessor {
     }
 
     // Retries transient failures (connection errors, 5xx) so a single hiccup does not end a long import.
-    private async withRetry<T>(what: string, fn: () => Promise<T>, maxRetries: number = 3): Promise<T> {
+    private async withRetry<T>(what: string, fn: () => Promise<T>, maxRetries: number = 3,
+                               isRetryable: (err: any) => boolean = ChunkProcessor.isTransientError): Promise<T> {
         for (let attempt = 0; ; attempt++) {
             try {
                 return await fn();
             } catch (err: any) {
-                const status = err.response?.status;
-                const retryable = status === undefined || status >= 500;
-                if (!retryable || attempt >= maxRetries) {
+                if (!isRetryable(err) || attempt >= maxRetries) {
                     throw err;
                 }
                 const delayMs = 2000 * Math.pow(2, attempt);
@@ -677,6 +676,24 @@ export class ChunkProcessor {
                 await new Promise(resolve => setTimeout(resolve, delayMs));
             }
         }
+    }
+
+    // Connection problems and 5xx responses.
+    private static isTransientError(err: any): boolean {
+        const status = err.response?.status;
+        return status === undefined || status >= 500;
+    }
+
+    // The chunk API answers 500 both for permanent problems (e.g. "trafilatura failed to extract meaningful
+    // text") and for temporary ones, such as a read timeout while it fetches the document from
+    // entscheidsuche.ch. Only the temporary ones are worth retrying.
+    private static isTransientChunkApiError(err: any): boolean {
+        const status = err.response?.status;
+        if (status === undefined || status === 502 || status === 503 || status === 504) {
+            return true;
+        }
+        const detail = JSON.stringify(err.response?.data ?? '');
+        return status === 500 && /timed? ?out|timeout|connection|temporar/i.test(detail);
     }
 
     private async clearScroll(scrollId: string): Promise<void> {
