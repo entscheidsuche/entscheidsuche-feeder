@@ -80,14 +80,36 @@ export class ElasticUtil {
         });
     }
 
+    // Indexes the documents with _bulk, split into requests of at most BULK_MAX_BYTES (default 20 MB).
+    // Elasticsearch rejects larger requests with 413 (http.max_content_length, 100 MB by default), which
+    // documents with thousands of micro chunks would otherwise exceed.
     async bulkIndex(index: string, docs: Array<{id: string, body: any}>): Promise<void> {
         if (docs.length === 0) {
             return;
         }
-        const ndjson = docs
-            .map(doc => JSON.stringify({index: {_index: index, _id: doc.id}}) + '\n' + JSON.stringify(doc.body))
-            .join('\n') + '\n';
-        const resp = await Axios.post(`${this.elasticsearchHost}/_bulk`, ndjson, {
+        const maxBytes = parseInt(`${process.env.BULK_MAX_BYTES || 20 * 1024 * 1024}`);
+        let lines: Array<string> = [];
+        let bytes = 0;
+        let count = 0;
+        for (const doc of docs) {
+            const line = JSON.stringify({index: {_index: index, _id: doc.id}}) + '\n' + JSON.stringify(doc.body) + '\n';
+            const lineBytes = Buffer.byteLength(line);
+            if (lines.length > 0 && bytes + lineBytes > maxBytes) {
+                await this.sendBulk(index, lines, count);
+                lines = [];
+                bytes = 0;
+                count = 0;
+            }
+            lines.push(line);
+            bytes += lineBytes;
+            count++;
+        }
+        await this.sendBulk(index, lines, count);
+        console.log(`bulk indexed ${docs.length} documents into ${index}`);
+    }
+
+    private async sendBulk(index: string, lines: Array<string>, count: number): Promise<void> {
+        const resp = await Axios.post(`${this.elasticsearchHost}/_bulk`, lines.join(''), {
             maxContentLength: Infinity,
             maxBodyLength: Infinity,
             auth: {
@@ -103,6 +125,7 @@ export class ElasticUtil {
                 index,
                 message: err.message,
                 code: err.code,
+                status: err.response?.status,
                 response: err.response?.data?.error
             };
         });
@@ -111,9 +134,8 @@ export class ElasticUtil {
                 .map(item => item.index)
                 .filter(result => result.error !== undefined)
                 .map(result => ({id: result._id, error: result.error}));
-            throw {index, message: `bulk indexing failed for ${failed.length} of ${docs.length} documents`, failed};
+            throw {index, message: `bulk indexing failed for ${failed.length} of ${count} documents`, failed};
         }
-        console.log(`bulk indexed ${docs.length} documents into ${index}`);
     }
 
     async existsIndex(index: string): Promise<boolean> {
