@@ -98,6 +98,28 @@ app.post("/import", (req, res) => {
     return res.status(202).json({message: 'import started'});
 })
 
+// Retries the failed documents of the last import whose reason contains body.reason (case-insensitive),
+// or all of them without a reason. Optional body.copyDocument / body.indexMicroChunks, default: as in the last import.
+app.post("/import/retry", async (req, res) => {
+    if (chunkProcessor.isImportRunning()) {
+        return res.status(409).json({message: 'an import or retry is already running', status: chunkProcessor.getImportStatus()});
+    }
+    const params = req.body ?? {};
+    const reason = typeof params.reason === 'string' && params.reason !== '' ? params.reason : undefined;
+    try {
+        const plan = await chunkProcessor.planRetry(reason);
+        if (plan.selectedIds.length === 0) {
+            return res.status(404).json({message: reason ? `no failed documents with a reason containing "${reason}"` : 'no failed documents'});
+        }
+        const flag = (value: any) => typeof value === 'boolean' ? value : undefined;
+        chunkProcessor.retryFailed(plan, reason, flag(params.copyDocument), flag(params.indexMicroChunks))
+            .catch(err => console.log(`${new Date().toISOString()} error in retrying failed documents: ${JSON.stringify(errorInfo(err))}`));
+        return res.status(202).json({message: 'retry started', selected: plan.selectedIds.length, reason: reason ?? null});
+    } catch (err) {
+        return res.status(500).json(errorInfo(err));
+    }
+})
+
 // All failed documents of the current/last import with their reasons, or only the ids (?format=ids).
 app.get("/import/failed", (req, res) => {
     const failures = chunkProcessor.getImportFailures();

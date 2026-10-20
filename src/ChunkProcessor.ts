@@ -8,6 +8,8 @@ import * as http from "http";
 
 export type ImportStatus = {
     running: boolean,
+    kind: 'import' | 'retry',
+    reasonFilter?: string,
     copyDocument: boolean,
     indexMicroChunks: boolean,
     total: number,
@@ -24,6 +26,11 @@ export type ImportStatus = {
 export type ImportFailure = {
     id: string,
     reason: string
+}
+
+export type RetryPlan = {
+    all: Array<ImportFailure>,
+    selectedIds: Array<string>
 }
 
 export class ChunkProcessor {
@@ -55,6 +62,8 @@ export class ChunkProcessor {
     private elasticUtil: ElasticUtil;
 
     private importStatus?: ImportStatus;
+    // Failures of earlier runs that the current retry does not touch (not selected, or not yet attempted).
+    private retainedFailures: Array<ImportFailure> = [];
     private readonly importFailedLog = `${process.env.IMPORT_FAILED_LOG || 'import-failed.jsonl'}`;
     private checkedImportIndices = new Set<string>();
 
@@ -461,7 +470,8 @@ export class ChunkProcessor {
         if (this.importStatus === undefined) {
             return undefined;
         }
-        const {failures, ...status} = this.importStatus;
+        const {failures: runFailures, ...status} = this.importStatus;
+        const failures = this.getImportFailures() ?? [];
         return {
             ...status,
             failuresByReason: ChunkProcessor.countBy(failures, failure => ChunkProcessor.reasonGroup(failure.reason), 20),
@@ -473,7 +483,132 @@ export class ChunkProcessor {
     }
 
     getImportFailures(): Array<ImportFailure> | undefined {
-        return this.importStatus?.failures;
+        if (this.importStatus === undefined) {
+            return undefined;
+        }
+        return [...this.retainedFailures, ...this.importStatus.failures];
+    }
+
+    // The known failures: from the last run since the feeder started, otherwise (after a restart) from the
+    // failure log. Broken lines in the log are skipped.
+    private async loadFailures(): Promise<Array<ImportFailure>> {
+        const inMemory = this.getImportFailures();
+        if (inMemory !== undefined) {
+            return inMemory;
+        }
+        const content = await fs.promises.readFile(this.importFailedLog, 'utf-8').catch(err => {
+            if (err.code === 'ENOENT') {
+                return '';
+            }
+            throw err;
+        });
+        const failures: Array<ImportFailure> = [];
+        for (const line of content.split('\n')) {
+            if (line.trim() === '') {
+                continue;
+            }
+            try {
+                const failure = JSON.parse(line);
+                if (typeof failure.id === 'string') {
+                    failures.push({id: failure.id, reason: `${failure.reason ?? ''}`});
+                }
+            } catch {
+                console.log(`skipping broken line in ${this.importFailedLog}: ${line.slice(0, 200)}`);
+            }
+        }
+        return failures;
+    }
+
+    // Selects the failures whose reason contains the given text (case-insensitive), or all without a reason.
+    async planRetry(reason?: string): Promise<RetryPlan> {
+        const all = await this.loadFailures();
+        const needle = reason?.toLowerCase();
+        const selected = all.filter(failure => needle === undefined || failure.reason.toLowerCase().includes(needle));
+        return {all, selectedIds: Array.from(new Set(selected.map(failure => failure.id)))};
+    }
+
+    // Retries the documents of a RetryPlan like the import does. Documents that succeed drop out of the failure
+    // list; those that fail again keep their new reason. The failure log is rewritten with the result at the end.
+    public async retryFailed(plan: RetryPlan, reason?: string, copyDocument?: boolean, indexMicroChunks?: boolean): Promise<void> {
+        if (this.isImportRunning()) {
+            throw new Error('an import is already running');
+        }
+        const previous = this.importStatus;
+        const copy = copyDocument ?? previous?.copyDocument ?? false;
+        const micro = indexMicroChunks ?? previous?.indexMicroChunks ?? true;
+        const concurrency = parseInt(`${process.env.IMPORT_CONCURRENCY || 12}`);
+        const selected = new Set(plan.selectedIds);
+        const notSelected = plan.all.filter(failure => !selected.has(failure.id));
+        const status: ImportStatus = {
+            running: true, kind: 'retry', reasonFilter: reason, copyDocument: copy, indexMicroChunks: micro,
+            total: plan.selectedIds.length, count: 0, failed: 0, failures: [],
+            startedAt: new Date().toISOString(), docsPerMin: 0, etaMin: 0
+        };
+        // Until a document is attempted, its old failure stays in the list.
+        let untried = plan.all.filter(failure => selected.has(failure.id));
+        this.retainedFailures = [...notSelected, ...untried];
+        this.importStatus = status;
+        const startTime = Date.now();
+        console.log(`${new Date().toISOString()} retry started: ${status.total} failed documents` +
+            (reason ? ` with reason matching "${reason}"` : '') + ` (copyDocument ${copy}, indexMicroChunks ${micro})`);
+        try {
+            const batchSize = 100;
+            for (let start = 0; start < plan.selectedIds.length; start += batchSize) {
+                const ids = plan.selectedIds.slice(start, start + batchSize);
+                // The import needs each document's index and source (for copyDocument); the same id may exist
+                // in several indices, the first hit is used.
+                const response = await this.withRetry('retry search', () => Axios.post(this.searchUrl + 'entscheidsuche.v2*/_search', {
+                    query: {ids: {values: ids}},
+                    size: ids.length * 3
+                }, {
+                    maxContentLength: Infinity,
+                    maxBodyLength: Infinity,
+                    httpsAgent: this.agent
+                }).then(resp => resp.data));
+                const hits = new Map<string, any>();
+                for (const hit of response.hits.hits) {
+                    if (!hits.has(hit._id)) {
+                        hits.set(hit._id, hit);
+                    }
+                }
+                const attempted = new Set(ids);
+                untried = untried.filter(failure => !attempted.has(failure.id));
+                this.retainedFailures = [...notSelected, ...untried];
+                for (const id of ids.filter(id => !hits.has(id))) {
+                    status.count++;
+                    status.failed++;
+                    status.failures.push({id, reason: 'not found in source index'});
+                }
+                await this.mapWithConcurrency(Array.from(hits.values()), hit => this.importHit(hit, copy, micro, status, false), concurrency);
+                this.updateImportProgress(status, startTime);
+            }
+        } catch (error) {
+            status.error = errorInfo(error);
+            console.error(`retry aborted after ${status.count}/${status.total} documents: ${JSON.stringify(status.error)}`);
+        } finally {
+            status.running = false;
+            status.finishedAt = new Date().toISOString();
+            const failures = this.getImportFailures() ?? [];
+            await this.rewriteImportFailedLog(failures);
+            const elapsedMin = ((Date.now() - startTime) / 60000).toFixed(1);
+            const topReasons = Object.entries(ChunkProcessor.countBy(status.failures, failure => ChunkProcessor.reasonGroup(failure.reason), 5))
+                .map(([group, count]) => `${count}x ${group}`).join('; ');
+            console.log(`${new Date().toISOString()} retry finished: ${status.count}/${status.total} documents retried, ` +
+                `${status.count - status.failed} succeeded, ${status.failed} failed again, ${elapsedMin} min` +
+                (status.failed > 0 ? `. Most frequent reasons: ${topReasons}` : '') +
+                `. ${failures.length} failures remain in ${this.importFailedLog}`);
+        }
+    }
+
+    // Replaces the failure log; written to a temporary file first, so a crash never leaves a partial log.
+    private async rewriteImportFailedLog(failures: Array<ImportFailure>): Promise<void> {
+        const tmp = `${this.importFailedLog}.tmp`;
+        try {
+            await fs.promises.writeFile(tmp, failures.map(failure => JSON.stringify(failure) + '\n').join(''));
+            await fs.promises.rename(tmp, this.importFailedLog);
+        } catch (err: any) {
+            console.log(`could not rewrite ${this.importFailedLog}: ${err.message}`);
+        }
     }
 
     // Short, readable reason for a failed document, from the error the import caught.
@@ -529,10 +664,11 @@ export class ChunkProcessor {
         const keepAlive = `${process.env.IMPORT_SCROLL_KEEPALIVE || '60m'}`;
         const concurrency = parseInt(`${process.env.IMPORT_CONCURRENCY || 12}`);
         const status: ImportStatus = {
-            running: true, copyDocument, indexMicroChunks, total: 0, count: 0, failed: 0, failures: [],
+            running: true, kind: 'import', copyDocument, indexMicroChunks, total: 0, count: 0, failed: 0, failures: [],
             startedAt: new Date().toISOString(), docsPerMin: 0, etaMin: 0
         };
         this.importStatus = status;
+        this.retainedFailures = [];
         await this.rotateImportFailedLog();
         const startTime = Date.now();
         let scrollId: string | undefined;
@@ -631,7 +767,8 @@ export class ChunkProcessor {
         }
     }
 
-    private async importHit(hit: any, copyDocument: boolean, indexMicroChunks: boolean, status: ImportStatus): Promise<void> {
+    // appendToLog: write a failure to the failure log right away (import). A retry rewrites the log at the end instead.
+    private async importHit(hit: any, copyDocument: boolean, indexMicroChunks: boolean, status: ImportStatus, appendToLog: boolean = true): Promise<void> {
         const docStart = Date.now();
         try {
             if (copyDocument) await this.processImportHits(hit)
@@ -645,6 +782,9 @@ export class ChunkProcessor {
             const failure: ImportFailure = {id: hit._id, reason: ChunkProcessor.failureReason(err)};
             status.failures.push(failure);
             console.error(`import ${status.count}/${status.total}: ${hit._id} failed after ${Date.now() - docStart} ms: ${JSON.stringify(errorInfo(err))}`);
+            if (!appendToLog) {
+                return;
+            }
             // Kept on disk too, so the list survives a restart of the feeder.
             await fs.promises.appendFile(this.importFailedLog, JSON.stringify(failure) + '\n')
                 .catch(appendErr => console.log(`could not write to ${this.importFailedLog}: ${appendErr.message}`));
