@@ -122,9 +122,17 @@ export class SpiderProcessor {
         if (from !== undefined) {
             query.search_after = from;
         }
+        // WICHTIG: auch dieser Lesezugriff braucht die Zugangsdaten. Ohne auth lief er
+        // nur auf Clustern mit anonymem Lesezugriff (alte Prod-Instanz); auf dem
+        // KI-Cluster kam ein 401, das spiderDictionary blieb leer -> alles wurde bei
+        // jedem Lauf neu indexiert und nicht_mehr_da-Loeschungen wurden still verworfen.
         return Axios.post(`${this.elasticsearchHost}/${index}/_search`, query, {
             maxContentLength: Infinity,
             maxBodyLength: Infinity,
+            auth: {
+                username: this.elasticsearchUser,
+                password: this.elasticsearchPassword
+            },
             httpsAgent: this.agent
         })
             .then(resp => {
@@ -152,7 +160,17 @@ export class SpiderProcessor {
                     }
                 }
             })
-            .catch(err => console.log(err));
+            // Fehler NICHT verschlucken: ein gescheiterter Bestandsscan wuerde sonst wie
+            // ein leerer Index wirken (Voll-Reindex statt Skip, keine Loeschungen).
+            // Stattdessen wie bei den uebrigen ES-Aufrufen scheitern -> der Request
+            // liefert einen Fehler und der Konsolidierer behandelt ihn als kritisch.
+            .catch(err => {
+                if (err.response && err.response.data && err.response.data.error) {
+                    throw { index: index, response: err.response.data.error }
+                } else {
+                    throw { index: index, response: err };
+                }
+            });
 
     }
 
