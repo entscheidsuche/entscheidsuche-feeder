@@ -1,5 +1,6 @@
 import Axios from "axios";
 import {ElasticUtil} from "./ElasticUtil";
+import {DOC_INDEX_MAPPING} from "./DocIndexMapping";
 import {EmbeddingClient} from "./EmbeddingClient";
 import {errorInfo} from "./ErrorUtil";
 import * as https from "https";
@@ -866,113 +867,7 @@ export class ChunkProcessor {
     }
 
     private async createDocIndex(name: string) {
-        return await this.elasticUtil.createIndex(name,{
-            "mappings": {
-                "dynamic": "true",
-                "dynamic_date_formats": [
-                    "strict_date_optional_time",
-                    "yyyy/MM/dd HH:mm:ss Z||yyyy/MM/dd Z"
-                ],
-                "dynamic_templates": [],
-                "date_detection": true,
-                "numeric_detection": false,
-                "properties": {
-                    "abstract": {
-                        "properties": {
-                            "de": {
-                                "type": "text"
-                            },
-                            "fr": {
-                                "type": "text"
-                            },
-                            "it": {
-                                "type": "text"
-                            }
-                        }
-                    },
-                    "attachment": {
-                        "properties": {
-                            "author": {
-                                "type": "text"
-                            },
-                            "content": {
-                                "type": "text",
-                                "store": true
-                            },
-                            "content_length": {
-                                "type": "long"
-                            },
-                            "content_type": {
-                                "type": "keyword"
-                            },
-                            "content_url": {
-                                "type": "keyword"
-                            },
-                            "date": {
-                                "type": "date"
-                            },
-                            "language": {
-                                "type": "keyword"
-                            },
-                            "source": {
-                                "type": "keyword"
-                            },
-                            "title": {
-                                "type": "text"
-                            }
-                        }
-                    },
-                    "canton": {
-                        "type": "keyword"
-                    },
-                    "date": {
-                        "type": "date"
-                    },
-                    "hierarchy": {
-                        "type": "keyword"
-                    },
-                    "id": {
-                        "type": "keyword"
-                    },
-                    "meta": {
-                        "properties": {
-                            "de": {
-                                "type": "text"
-                            },
-                            "fr": {
-                                "type": "text"
-                            },
-                            "it": {
-                                "type": "text"
-                            }
-                        }
-                    },
-                    "reference": {
-                        "type": "keyword"
-                    },
-                    "scrapedate": {
-                        "type": "date"
-                    },
-                    "source": {
-                        "type": "keyword"
-                    },
-                    "title": {
-                        "dynamic": "true",
-                        "properties": {
-                            "de": {
-                                "type": "text"
-                            },
-                            "fr": {
-                                "type": "text"
-                            },
-                            "it": {
-                                "type": "text"
-                            }
-                        }
-                    }
-                }
-            }
-        })
+        return await this.elasticUtil.createIndex(name, DOC_INDEX_MAPPING);
     }
 
 }

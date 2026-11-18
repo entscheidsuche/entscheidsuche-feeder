@@ -5,6 +5,7 @@ import {ChunkQueue} from "./ChunkQueue";
 import https from "https";
 import fs from "fs";
 import { serializeError } from "serialize-error";
+import { DOC_INDEX_MAPPING } from "./DocIndexMapping";
 
 export class SpiderProcessor {
 
@@ -41,14 +42,45 @@ export class SpiderProcessor {
 
     async fetchExistingSpider(spider: string, index: string, dropIndex: boolean): Promise<SpiderDictionary> {
         const spiderDictionary: SpiderDictionary = {};
+        // Der Index wird immer explizit mit dem festen Mapping angelegt: nach dem Drop
+        // (jobtyp=neu) und wenn er noch nicht existiert (neuer Spider). Sonst legt
+        // Elasticsearch ihn beim ersten Dokument mit geratenem Mapping an (id/hierarchy
+        // als Text) und der Index ist fuer Folgejobs und die Suche unbrauchbar.
         return this.existsIndex(index).then(exists => {
             if (exists) {
                 if (dropIndex) {
-                    return this.deleteIndex(index).then(_ => spiderDictionary);
+                    return this.deleteIndex(index)
+                        .then(_ => this.createIndex(index))
+                        .then(_ => spiderDictionary);
                 }
                 return this.fetchExistingSpiderFrame(spider, index, spiderDictionary).then(_ => spiderDictionary);
             } else {
-                return spiderDictionary;
+                return this.createIndex(index).then(_ => spiderDictionary);
+            }
+        });
+    }
+
+    // Legt den Spider-Index mit DOC_INDEX_MAPPING an. Schlaegt das fehl, scheitert der
+    // ganze Job (wie bei den uebrigen ES-Aufrufen) -- besser als ein Index ohne Mapping.
+    async createIndex(index: string): Promise<void> {
+        return Axios.put(`${this.elasticsearchHost}/${index}`, DOC_INDEX_MAPPING, {
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+            auth: {
+                username: this.elasticsearchUser,
+                password: this.elasticsearchPassword
+            },
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            httpsAgent: this.agent
+        }).then(resp => {
+            console.log(`created index ${index} with mapping`)
+        }).catch(err => {
+            if (err.response && err.response.data && err.response.data.error) {
+                throw { index: index, response: err.response.data.error }
+            } else {
+                throw { index: index, response: err };
             }
         });
     }
